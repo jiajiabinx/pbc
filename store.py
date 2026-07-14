@@ -78,6 +78,34 @@ CREATE TABLE IF NOT EXISTS emails (
     processed_at REAL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    role TEXT DEFAULT 'reviewer',  -- reviewer | lead | admin
+    created_at REAL
+);
+CREATE TABLE IF NOT EXISTS item_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    review TEXT NOT NULL,           -- Unreviewed | Approved | Rejected
+    note TEXT,
+    reviewed_at REAL,
+    UNIQUE(item_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS run_history (
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at REAL,
+    ended_at REAL,
+    status TEXT,           -- finished | stopped | budget_exceeded | error
+    summary TEXT,          -- JSON {total_emails, total_cost, etc}
+    items_snapshot TEXT,   -- JSON snapshot of items table
+    episodes_snapshot TEXT,-- JSON snapshot of episodes + trace
+    drafts_snapshot TEXT,  -- JSON snapshot of drafts
+    api_calls_snapshot TEXT-- JSON snapshot of api_calls for cost breakdown
+);
 """
 
 
@@ -158,7 +186,8 @@ class Store:
         self.conn.commit()
 
     def set_human_review(self, item_id: str, review: str, note: str = "") -> None:
-        """Auditor sign-off on an item's tracked state — separate from agent status."""
+        """Auditor sign-off on an item's tracked state — separate from agent status.
+        DEPRECATED: Use set_user_review for multi-tenant support."""
         if review not in ("Unreviewed", "Approved", "Rejected"):
             raise ValueError(f"Unknown review value {review!r}")
         if self.get_item(item_id) is None:
@@ -167,6 +196,122 @@ class Store:
             "UPDATE items SET human_review=?, human_note=?, reviewed_at=? WHERE item_id=?",
             (review, note, time.time(), item_id))
         self.conn.commit()
+
+    # ---------- users & multi-tenant reviews ----------
+    def create_user(self, username: str, password: str, display_name: str = "",
+                    role: str = "reviewer") -> int:
+        """Create a new user. Password is hashed with SHA-256 (simple, not production-grade)."""
+        import hashlib
+        if role not in ("reviewer", "lead", "admin"):
+            raise ValueError(f"Unknown role {role!r}")
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        try:
+            cur = self.conn.execute(
+                "INSERT INTO users (username, password_hash, display_name, role, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (username.lower(), password_hash, display_name or username, role, time.time()))
+            self.conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            raise ValueError(f"Username {username!r} already exists")
+
+    def authenticate_user(self, username: str, password: str) -> dict | None:
+        """Verify credentials. Returns user dict or None if invalid."""
+        import hashlib
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE username=? AND password_hash=?",
+            (username.lower(), password_hash)).fetchone()
+        if row:
+            return {k: row[k] for k in row.keys()}
+        return None
+
+    def get_user(self, user_id: int) -> dict | None:
+        """Get user by ID."""
+        row = self.conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            return {k: row[k] for k in row.keys()}
+        return None
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        """Get user by username."""
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE username=?", (username.lower(),)).fetchone()
+        if row:
+            return {k: row[k] for k in row.keys()}
+        return None
+
+    def list_users(self) -> list[dict]:
+        """List all users."""
+        rows = self.conn.execute(
+            "SELECT user_id, username, display_name, role, created_at FROM users ORDER BY username"
+        ).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
+
+    def set_user_review(self, item_id: str, user_id: int, review: str, note: str = "") -> None:
+        """Set a specific user's review for an item."""
+        if review not in ("Unreviewed", "Approved", "Rejected"):
+            raise ValueError(f"Unknown review value {review!r}")
+        if self.get_item(item_id) is None:
+            raise ValueError(f"Unknown item {item_id!r}")
+        if self.get_user(user_id) is None:
+            raise ValueError(f"Unknown user {user_id!r}")
+        self.conn.execute(
+            """INSERT INTO item_reviews (item_id, user_id, review, note, reviewed_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(item_id, user_id) DO UPDATE SET
+               review=excluded.review, note=excluded.note, reviewed_at=excluded.reviewed_at""",
+            (item_id, user_id, review, note, time.time()))
+        self.conn.commit()
+
+    def get_item_reviews(self, item_id: str) -> list[dict]:
+        """Get all reviews for an item, with user info."""
+        rows = self.conn.execute(
+            """SELECT r.*, u.username, u.display_name, u.role
+               FROM item_reviews r JOIN users u ON r.user_id = u.user_id
+               WHERE r.item_id=? ORDER BY r.reviewed_at""",
+            (item_id,)).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
+
+    def get_user_reviews(self, user_id: int) -> list[dict]:
+        """Get all reviews by a specific user."""
+        rows = self.conn.execute(
+            "SELECT * FROM item_reviews WHERE user_id=? ORDER BY reviewed_at DESC",
+            (user_id,)).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
+
+    def get_review_summary(self) -> dict:
+        """Get summary of reviews across all items and users."""
+        items = self.all_items()
+        users = self.list_users()
+        summary = {
+            "total_items": len(items),
+            "total_reviewers": len(users),
+            "by_item": {},
+            "by_user": {},
+        }
+        for it in items:
+            reviews = self.get_item_reviews(it["item_id"])
+            summary["by_item"][it["item_id"]] = {
+                "reviews": reviews,
+                "approved_count": sum(1 for r in reviews if r["review"] == "Approved"),
+                "rejected_count": sum(1 for r in reviews if r["review"] == "Rejected"),
+                "pending_count": len(users) - len(reviews),
+            }
+        for u in users:
+            user_reviews = self.get_user_reviews(u["user_id"])
+            summary["by_user"][u["username"]] = {
+                "display_name": u["display_name"],
+                "reviewed_count": len(user_reviews),
+                "approved_count": sum(1 for r in user_reviews if r["review"] == "Approved"),
+                "rejected_count": sum(1 for r in user_reviews if r["review"] == "Rejected"),
+            }
+        return summary
+
+    def ensure_default_admin(self) -> None:
+        """Create a default admin user if no users exist."""
+        if not self.list_users():
+            self.create_user("admin", "admin", "Administrator", "admin")
 
     # ---------- documents ----------
     def register_document(self, filename: str, path: str, sha256: str, email_id: str,
@@ -296,12 +441,119 @@ class Store:
     def reset_all(self) -> None:
         """Wipe run data for a fresh restart, in place (keeps the file/inode so an
         open UI connection stays valid, and keeps the OCR cache — content-hash
-        keyed vision transcriptions stay correct and cost money to redo)."""
+        keyed vision transcriptions stay correct and cost money to redo).
+        
+        Archives the current run to run_history before clearing."""
+        # Archive the current run if there's anything to archive
+        self._archive_current_run()
+        
         for table in ("items", "documents", "episodes", "trace", "verifications",
                       "clarifications", "drafts", "api_calls", "emails"):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
         self.conn.commit()
+
+    def _archive_current_run(self) -> int | None:
+        """Archive current run data to run_history. Returns run_id or None if nothing to archive."""
+        # Check if there's anything to archive
+        episode_count = self.conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+        if episode_count == 0:
+            return None
+        
+        # Gather timestamps
+        first_episode = self.conn.execute(
+            "SELECT MIN(started_at) FROM episodes").fetchone()[0]
+        last_episode = self.conn.execute(
+            "SELECT MAX(ended_at) FROM episodes").fetchone()[0]
+        
+        # Determine run status
+        status = self.get_meta("run_status") or "unknown"
+        
+        # Build summary
+        total_cost = self.total_cost()
+        email_count = self.conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        escalation_count = self.conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE escalated_from IS NOT NULL").fetchone()[0]
+        summary = json.dumps({
+            "total_emails": email_count,
+            "total_episodes": episode_count,
+            "total_cost_usd": total_cost,
+            "escalations": escalation_count,
+            "run_args": json.loads(self.get_meta("run_args") or "null"),
+        })
+        
+        # Snapshot items
+        items = [{k: row[k] for k in row.keys()}
+                 for row in self.conn.execute("SELECT * FROM items").fetchall()]
+        
+        # Snapshot episodes with their traces
+        episodes_data = []
+        for ep in self.conn.execute("SELECT * FROM episodes ORDER BY episode_id").fetchall():
+            ep_dict = {k: ep[k] for k in ep.keys()}
+            traces = [{k: t[k] for k in t.keys()}
+                      for t in self.conn.execute(
+                          "SELECT * FROM trace WHERE episode_id=? ORDER BY seq",
+                          (ep["episode_id"],)).fetchall()]
+            ep_dict["traces"] = traces
+            # Include verifications for this episode
+            verifs = [{k: v[k] for k in v.keys()}
+                      for v in self.conn.execute(
+                          "SELECT * FROM verifications WHERE episode_id=?",
+                          (ep["episode_id"],)).fetchall()]
+            ep_dict["verifications"] = verifs
+            episodes_data.append(ep_dict)
+        
+        # Snapshot drafts
+        drafts = [{k: d[k] for k in d.keys()}
+                  for d in self.conn.execute("SELECT * FROM drafts").fetchall()]
+        
+        # Snapshot API calls for cost breakdown
+        api_calls = [{k: c[k] for k in c.keys()}
+                     for c in self.conn.execute("SELECT * FROM api_calls").fetchall()]
+        
+        # Insert into run_history
+        cur = self.conn.execute(
+            """INSERT INTO run_history 
+               (started_at, ended_at, status, summary, items_snapshot, 
+                episodes_snapshot, drafts_snapshot, api_calls_snapshot)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (first_episode, last_episode or time.time(), status, summary,
+             json.dumps(items), json.dumps(episodes_data),
+             json.dumps(drafts), json.dumps(api_calls))
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_run_history(self) -> list[dict]:
+        """Get list of archived runs (metadata only, not full snapshots)."""
+        rows = self.conn.execute(
+            "SELECT run_id, started_at, ended_at, status, summary FROM run_history ORDER BY run_id DESC"
+        ).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
+
+    def get_run_snapshot(self, run_id: int) -> dict | None:
+        """Get full snapshot data for a specific run."""
+        row = self.conn.execute(
+            "SELECT * FROM run_history WHERE run_id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row["run_id"],
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],
+            "status": row["status"],
+            "summary": json.loads(row["summary"] or "{}"),
+            "items": json.loads(row["items_snapshot"] or "[]"),
+            "episodes": json.loads(row["episodes_snapshot"] or "[]"),
+            "drafts": json.loads(row["drafts_snapshot"] or "[]"),
+            "api_calls": json.loads(row["api_calls_snapshot"] or "[]"),
+        }
+
+    def delete_run_history(self, run_id: int) -> bool:
+        """Delete a specific run from history."""
+        cur = self.conn.execute("DELETE FROM run_history WHERE run_id=?", (run_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))

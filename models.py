@@ -15,7 +15,7 @@ import anthropic
 # Escalation ladder: agent loop starts on WORKER; the escalate tool moves up.
 WORKER = "claude-haiku-4-5"
 ESCALATION = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"]
-VERIFIER = "claude-sonnet-5"
+VERIFIER = "claude-opus-4-8"
 VISION = "claude-sonnet-5"
 EXTRACTOR = "claude-haiku-4-5"
 DRAFTER = "claude-haiku-4-5"

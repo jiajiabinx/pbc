@@ -107,7 +107,14 @@ Pure Python, unit-tested. Deliberately simple.
 `evals/run_evals.py` scores a run with **no LLM calls**: per-status
 precision/recall against `sample_groundtruth.json`, insufficiency-detection
 F1, expected tool-call-sequence match (hand-labeled required subsequences +
-forbidden tools per email in `evals/labels.json`), and measured cost.
+forbidden tools per email in `evals/labels.json`), and measured cost. The same
+scoring runs in the UI's **📊 Evals** tab, where each per-email result expands
+to the source email and inline evidence previews (with download).
+
+For variance across runs, `evals/benchmark.py --runs N` (or the Benchmark
+section of the Evals tab) repeats N fresh runs on a scratch DB — never the
+live tracker — scoring each and reporting mean ± stdev accuracy and cost.
+These runs are real API spend, capped per run by `--budget`.
 `tests/` covers parsing, versioning lineage, the status guard, cost math, and
 the agent loop itself (scripted fake model: forced plan, escalation ladder,
 guard errors returned to the model).

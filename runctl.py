@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -90,6 +91,7 @@ def start(store, mailbox: str, pbc: str, profile: str, *,
     store.set_meta("run_progress", "{}")
     cmd = [sys.executable, "run.py", "--mailbox", mailbox, "--pbc", pbc,
            "--profile", profile, "--db", store.db_path, "--budget", str(budget)]
+    env["PYTHONUNBUFFERED"] = "1"  # keep the log tail-able mid-run
     root = Path(__file__).resolve().parent
     (root / "data").mkdir(exist_ok=True)
     with open(root / LOG_PATH, "ab") as log:
@@ -98,4 +100,79 @@ def start(store, mailbox: str, pbc: str, profile: str, *,
     store.set_meta("run_pid", str(proc.pid))
     store.set_meta("run_args", json.dumps(
         {"mailbox": mailbox, "pbc": pbc, "profile": profile, "budget": budget}))
+    return proc.pid
+
+
+# ---------------------------------------------------------------- benchmark
+# Same pattern as the run control above, on `bench_*` meta keys: the UI spawns
+# evals/benchmark.py, which loops fresh runs on a scratch DB (see its docstring).
+
+BENCH_LOG = "data/benchmark.log"
+
+
+def bench_state(store) -> dict:
+    status = store.get_meta("bench_status") or "idle"
+    alive = _pid_alive(store.get_meta("bench_pid"))
+    if status in ("launching", "running") and not alive:
+        status = "crashed"
+    # per-email progress + live cost of the in-flight run, read straight from
+    # the scratch DB the runner writes (bench_progress only counts whole runs)
+    run: dict = {}
+    scratch = store.get_meta("bench_scratch")
+    if alive and scratch and (Path(__file__).resolve().parent / scratch).exists():
+        try:
+            path = Path(__file__).resolve().parent / scratch
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            row = conn.execute("SELECT value FROM meta WHERE key='run_progress'").fetchone()
+            run = json.loads(row[0]) if row else {}
+            run["cost_usd"] = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd),0) FROM api_calls").fetchone()[0]
+            conn.close()
+        except sqlite3.Error:
+            run = {}
+    return {
+        "status": status,
+        "alive": alive,
+        "progress": json.loads(store.get_meta("bench_progress") or "{}"),
+        "run": run,
+        "results": json.loads(store.get_meta("bench_results") or "[]"),
+        "summary": json.loads(store.get_meta("bench_summary") or "{}"),
+        "error": store.get_meta("bench_error"),
+    }
+
+
+def bench_stop(store) -> None:
+    store.set_meta("bench_control", "stop")
+
+
+def bench_start(store, runs: int, mailbox: str, pbc: str, profile: str, *,
+                budget: float = 2.0,
+                groundtruth: str = "input/sample/sample_groundtruth.json",
+                labels: str = "evals/labels.json", api_key: str = "") -> int:
+    """Spawn evals/benchmark.py in the background; results land in bench_* meta."""
+    if bench_state(store)["alive"]:
+        raise RuntimeError("A benchmark is already in progress.")
+    env = os.environ.copy()
+    if api_key:
+        env["ANTHROPIC_API_KEY"] = api_key
+    if not (env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN")):
+        raise RuntimeError(
+            "No Anthropic API key — paste one in the sidebar's run inputs, or "
+            "restart Streamlit from a shell where ANTHROPIC_API_KEY is exported.")
+    for key, val in (("bench_control", "run"), ("bench_status", "launching"),
+                     ("bench_error", ""), ("bench_progress", "{}"),
+                     ("bench_results", "[]"), ("bench_summary", "{}"),
+                     ("bench_scratch", "data/benchmark.db")):
+        store.set_meta(key, val)
+    cmd = [sys.executable, "evals/benchmark.py", "--runs", str(runs),
+           "--mailbox", mailbox, "--pbc", pbc, "--profile", profile,
+           "--budget", str(budget), "--groundtruth", groundtruth,
+           "--labels", labels, "--report-db", store.db_path]
+    env["PYTHONUNBUFFERED"] = "1"  # keep the log tail-able mid-run
+    root = Path(__file__).resolve().parent
+    (root / "data").mkdir(exist_ok=True)
+    with open(root / BENCH_LOG, "ab") as log:
+        proc = subprocess.Popen(cmd, cwd=str(root), stdout=log,
+                                stderr=subprocess.STDOUT, env=env)
+    store.set_meta("bench_pid", str(proc.pid))
     return proc.pid

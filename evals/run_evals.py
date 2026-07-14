@@ -103,6 +103,7 @@ def evaluate(db: str = "data/pbc.db",
         if ok:
             matched += 1
         sequences.append({
+            "email_id": email_row["email_id"],
             "date": datetime.fromtimestamp(email_row["date"]).strftime("%m-%d %H:%M"),
             "subject": email_row["subject"], "note": label["note"], "ok": ok,
             "required": label["required"], "forbidden_hit": violated, "actual": calls,

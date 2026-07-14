@@ -86,6 +86,25 @@ def test_start_fails_fast_without_api_key(store, monkeypatch):
         runctl.start(store, "mbox", "pbc.pdf", "profile.pdf")
 
 
+def test_bench_start_fails_fast_without_api_key(store, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="API key"):
+        runctl.bench_start(store, 2, "mbox", "pbc.pdf", "profile.pdf")
+
+
+def test_benchmark_summarize():
+    from evals.benchmark import summarize
+    runs = [{"status_accuracy": 0.8, "insufficiency_f1": 1.0,
+             "sequence_match": 0.9, "cost_usd": 0.2},
+            {"status_accuracy": 1.0, "insufficiency_f1": 0.5,
+             "sequence_match": 0.7, "cost_usd": 0.4}]
+    sm = summarize(runs)
+    assert sm["status_accuracy"]["mean"] == pytest.approx(0.9)
+    assert sm["cost_usd"]["min"] == 0.2 and sm["cost_usd"]["max"] == 0.4
+    assert sm["insufficiency_f1"]["stdev"] > 0
+
+
 def test_start_passes_ui_key_to_runner_env_only(store, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)

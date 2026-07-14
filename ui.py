@@ -27,10 +27,88 @@ st.set_page_config(page_title="PBC Tracker", layout="wide")
 
 @st.cache_resource
 def get_store() -> Store:
-    return Store(DB)
+    s = Store(DB)
+    s.ensure_default_admin()  # Create default admin if no users exist
+    return s
 
 
 store = get_store()
+
+# ------------------------------------------------------------------ auth
+def init_auth_state():
+    """Initialize authentication state."""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.user = None
+
+
+def login_form():
+    """Display login form and handle authentication."""
+    st.title("🔐 PBC Tracker Login")
+    
+    tab_login, tab_register = st.tabs(["Login", "Register"])
+    
+    with tab_login:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login", type="primary")
+            
+            if submitted:
+                if username and password:
+                    user = store.authenticate_user(username, password)
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.user = user
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+                else:
+                    st.warning("Please enter username and password")
+        
+        st.caption("Default credentials: admin / admin")
+    
+    with tab_register:
+        with st.form("register_form"):
+            new_username = st.text_input("Username", key="reg_user")
+            new_display = st.text_input("Display name", key="reg_display",
+                                        placeholder="How your name appears to others")
+            new_password = st.text_input("Password", type="password", key="reg_pass")
+            new_password2 = st.text_input("Confirm password", type="password", key="reg_pass2")
+            reg_submitted = st.form_submit_button("Register")
+            
+            if reg_submitted:
+                if not new_username or not new_password:
+                    st.warning("Username and password are required")
+                elif new_password != new_password2:
+                    st.error("Passwords do not match")
+                elif len(new_password) < 4:
+                    st.error("Password must be at least 4 characters")
+                else:
+                    try:
+                        store.create_user(new_username, new_password, 
+                                         new_display or new_username, "reviewer")
+                        st.success(f"Account created! You can now login as '{new_username}'")
+                    except ValueError as e:
+                        st.error(str(e))
+
+
+def logout():
+    """Log out the current user."""
+    st.session_state.authenticated = False
+    st.session_state.user = None
+    st.rerun()
+
+
+init_auth_state()
+
+# Show login form if not authenticated
+if not st.session_state.authenticated:
+    login_form()
+    st.stop()
+
+# User is authenticated - get current user
+current_user = st.session_state.user
 
 STATUS_COLORS = {
     "Not started": "⚪", "Requested": "🔵", "Under review": "🟡",
@@ -171,20 +249,52 @@ def run_control_panel():
 
 st.sidebar.title("PBC Email Agent")
 with st.sidebar:
+    # User info and logout
+    st.markdown(f"**👤 {current_user['display_name']}** ({current_user['role']})")
+    if st.button("🚪 Logout", key="logout_btn"):
+        logout()
+    
+    # Admin: user management
+    if current_user["role"] == "admin":
+        with st.expander("👥 Manage users"):
+            users = store.list_users()
+            st.caption(f"{len(users)} registered user(s)")
+            for u in users:
+                st.text(f"{u['display_name']} (@{u['username']}) - {u['role']}")
+            
+            st.markdown("**Add new user**")
+            new_u = st.text_input("Username", key="admin_new_user")
+            new_d = st.text_input("Display name", key="admin_new_display")
+            new_p = st.text_input("Password", type="password", key="admin_new_pass")
+            new_r = st.selectbox("Role", ["reviewer", "lead", "admin"], key="admin_new_role")
+            if st.button("Create user", key="admin_create_user"):
+                if new_u and new_p:
+                    try:
+                        store.create_user(new_u, new_p, new_d or new_u, new_r)
+                        st.success(f"Created user '{new_u}'")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+                else:
+                    st.warning("Username and password required")
+    
+    st.divider()
     run_control_panel()
 
-tab_tracker, tab_trace, tab_drafts, tab_evals = st.tabs(
-    ["📋 Tracker", "🔍 Agent trace", "✉️ Follow-up review", "📊 Evals"])
+tab_tracker, tab_trace, tab_drafts, tab_history, tab_evals = st.tabs(
+    ["📋 Tracker", "🔍 Agent trace", "✉️ Follow-up review", "📜 History", "📊 Evals"])
 
 # ------------------------------------------------------------------ tracker
 with tab_tracker:
     items = store.all_items()
+    all_reviewers = store.list_users()
+    
     if not items:
         st.info("No items yet — start a run from the sidebar.")
 
-    TRACKER_COLS = [0.5, 1.1, 1.7, 1.7, 1.8, 0.9, 2.2, 2.4, 0.8, 3.4]
+    TRACKER_COLS = [0.5, 1.1, 1.7, 2.5, 1.5, 0.9, 2.0, 2.0, 0.8, 3.0]
     hdr = st.columns(TRACKER_COLS, vertical_alignment="bottom")
-    for col, name in zip(hdr, ["", "Item", "Status", "Human review", "Category",
+    for col, name in zip(hdr, ["", "Item", "Status", "Reviewer Status", "Category",
                                "Priority", "Latest version", "Source email",
                                "Conf.", "Description"]):
         col.markdown(f"**{name}**" if name else "")
@@ -198,7 +308,19 @@ with tab_tracker:
             email = store.conn.execute(
                 "SELECT subject, from_addr FROM emails WHERE email_id=?",
                 (it["source_email_id"],)).fetchone()
-        review = it["human_review"] or "Unreviewed"
+        
+        # Get per-reviewer status
+        item_reviews = store.get_item_reviews(sel)
+        reviews_by_user = {r["user_id"]: r for r in item_reviews}
+        
+        # Build reviewer status summary
+        approved_count = sum(1 for r in item_reviews if r["review"] == "Approved")
+        rejected_count = sum(1 for r in item_reviews if r["review"] == "Rejected")
+        pending_count = len(all_reviewers) - len(item_reviews)
+        
+        # Current user's review
+        my_review = reviews_by_user.get(current_user["user_id"], {})
+        my_review_status = my_review.get("review", "Unreviewed")
 
         open_key = f"open_{sel}"
         is_open = st.session_state.get(open_key, False)
@@ -209,7 +331,9 @@ with tab_tracker:
             st.rerun()
         row[1].markdown(f"**{sel}**")
         row[2].markdown(f"{STATUS_COLORS.get(it['status'], '')} {it['status']}")
-        row[3].markdown(f"{REVIEW_ICONS.get(review, '')} {review}")
+        # Show reviewer status summary with icons
+        reviewer_summary = f"✅{approved_count} ❌{rejected_count} ⏳{pending_count}"
+        row[3].markdown(f"{REVIEW_ICONS.get(my_review_status, '')} You: {my_review_status}\n\n{reviewer_summary}")
         row[4].markdown(it["category"] or "")
         row[5].markdown(it["priority"] or "")
         row[6].caption(f"{doc['filename']} (v{doc['version']})" if doc else "")
@@ -220,7 +344,7 @@ with tab_tracker:
         if not is_open:
             continue
         with st.container(border=True):
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns([2, 2, 2])
             with col1:
                 st.write(it["description"])
                 st.caption(f"Acceptance: {it['acceptance']}")
@@ -233,20 +357,33 @@ with tab_tracker:
                 if it["rationale"]:
                     st.info(it["rationale"])
 
-                st.markdown("**👤 Human review (your sign-off)**")
-                current = it["human_review"] or "Unreviewed"
+                st.markdown(f"**👤 Your review ({current_user['display_name']})**")
                 choice = st.radio("Review", ["Unreviewed", "Approved", "Rejected"],
-                                  index=["Unreviewed", "Approved", "Rejected"].index(current),
+                                  index=["Unreviewed", "Approved", "Rejected"].index(my_review_status),
                                   horizontal=True, key=f"rev_{sel}",
                                   label_visibility="collapsed")
-                note = st.text_input("Review note", it["human_note"] or "", key=f"revnote_{sel}",
+                note = st.text_input("Review note", my_review.get("note", "") or "", key=f"revnote_{sel}",
                                      placeholder="e.g. checked source doc, agree with Insufficient")
-                if st.button("Save review", key=f"revsave_{sel}"):
-                    store.set_human_review(sel, choice, note)
+                if st.button("Save my review", key=f"revsave_{sel}"):
+                    store.set_user_review(sel, current_user["user_id"], choice, note)
                     st.toast(f"{sel} marked {choice}")
                     st.rerun()
-                if it["reviewed_at"]:
-                    st.caption(f"Last reviewed {ts(it['reviewed_at'])}")
+                if my_review.get("reviewed_at"):
+                    st.caption(f"Your last review: {ts(my_review['reviewed_at'])}")
+                
+                # Show all reviewer statuses
+                st.markdown("**👥 All reviewer statuses**")
+                for reviewer in all_reviewers:
+                    r = reviews_by_user.get(reviewer["user_id"])
+                    if r:
+                        icon = REVIEW_ICONS.get(r["review"], "□")
+                        reviewer_line = f"{icon} **{reviewer['display_name']}**: {r['review']}"
+                        if r.get("note"):
+                            reviewer_line += f" — _{r['note']}_"
+                        st.markdown(reviewer_line)
+                    else:
+                        st.markdown(f"□ **{reviewer['display_name']}**: _pending_")
+                        
             with col2:
                 if it["latest_doc_id"]:
                     st.markdown("**Version lineage**")
@@ -266,6 +403,23 @@ with tab_tracker:
                         st.caption(v["rationale"])
                         for c in json.loads(v["criteria"] or "[]"):
                             st.text(f"{'✓' if c['met'] else '✗'} {c['criterion']}: {c['evidence']}")
+            
+            with col3:
+                # Evidence preview
+                st.markdown("**📄 Evidence preview**")
+                if doc:
+                    st.caption(f"Showing: {doc['filename']}")
+                    render_attachment(doc["path"], doc["filename"], key=f"evidence_{sel}")
+                    if Path(doc["path"]).exists():
+                        try:
+                            with open(doc["path"], "rb") as fh:
+                                st.download_button(f"⬇ Download {doc['filename']}", fh.read(),
+                                                   file_name=doc["filename"],
+                                                   key=f"dl_evidence_{sel}")
+                        except OSError:
+                            pass
+                else:
+                    st.caption("No evidence document linked to this item yet.")
 
 # ------------------------------------------------------------------ trace
 with tab_trace:
@@ -502,13 +656,297 @@ with tab_drafts:
                 store.conn.commit()
                 st.rerun()
 
+# ------------------------------------------------------------------ history
+with tab_history:
+    st.markdown("""**Run History** — Previous runs are archived here when you click 
+    "🔁 Restart fresh". Inspect past agent traces, item states, and cost breakdowns.""")
+    
+    history = store.get_run_history()
+    if not history:
+        st.info("No archived runs yet. Previous runs will appear here after you "
+                "click '🔁 Restart fresh' in the sidebar.")
+    else:
+        # Run selector
+        run_options = {
+            f"Run #{r['run_id']} — {ts(r['started_at'])} — {r['status']} — "
+            f"{json.loads(r['summary'] or '{}').get('total_emails', '?')} emails, "
+            f"${json.loads(r['summary'] or '{}').get('total_cost_usd', 0):.4f}": r["run_id"]
+            for r in history
+        }
+        selected_label = st.selectbox("Select archived run", list(run_options.keys()))
+        selected_run_id = run_options[selected_label]
+        
+        # Delete button
+        col_del, col_space = st.columns([1, 4])
+        if col_del.button("🗑️ Delete this run", key=f"del_run_{selected_run_id}"):
+            store.delete_run_history(selected_run_id)
+            st.toast(f"Deleted run #{selected_run_id}")
+            st.rerun()
+        
+        snapshot = store.get_run_snapshot(selected_run_id)
+        if snapshot:
+            summary = snapshot["summary"]
+            
+            # Summary metrics
+            st.subheader("Run summary")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Emails processed", summary.get("total_emails", 0))
+            m2.metric("Episodes", summary.get("total_episodes", 0))
+            m3.metric("Escalations", summary.get("escalations", 0))
+            m4.metric("Total cost", f"${summary.get('total_cost_usd', 0):.4f}")
+            
+            run_args = summary.get("run_args") or {}
+            if run_args:
+                st.caption(f"Inputs: mailbox={run_args.get('mailbox')}, "
+                           f"pbc={run_args.get('pbc')}, profile={run_args.get('profile')}, "
+                           f"budget=${run_args.get('budget', 2.0):.2f}")
+            st.caption(f"Started: {ts(snapshot['started_at'])} — "
+                       f"Ended: {ts(snapshot['ended_at'])} — "
+                       f"Status: {snapshot['status']}")
+            
+            # Tabs for different aspects of the archived run
+            hist_tab_items, hist_tab_trace, hist_tab_cost = st.tabs(
+                ["📋 Items snapshot", "🔍 Trace archive", "💰 Cost breakdown"])
+            
+            with hist_tab_items:
+                items = snapshot.get("items", [])
+                if not items:
+                    st.info("No items in this run.")
+                else:
+                    # Show items as a table
+                    df_items = pd.DataFrame([{
+                        "Item": it["item_id"],
+                        "Status": f"{STATUS_COLORS.get(it['status'], '')} {it['status']}",
+                        "Human review": f"{REVIEW_ICONS.get(it.get('human_review', 'Unreviewed'), '')} {it.get('human_review', 'Unreviewed')}",
+                        "Category": it.get("category", ""),
+                        "Priority": it.get("priority", ""),
+                        "Confidence": f"{it['confidence']:.2f}" if it.get("confidence") else "",
+                        "Rationale": (it.get("rationale") or "")[:80],
+                    } for it in items])
+                    st.dataframe(df_items, width="stretch", hide_index=True)
+                    
+                    # Expandable detail for each item
+                    for it in items:
+                        with st.expander(f"{STATUS_COLORS.get(it['status'], '')} {it['item_id']} — {it['status']}"):
+                            st.write(it.get("description", ""))
+                            st.caption(f"Acceptance: {it.get('acceptance', '')}")
+                            if it.get("rationale"):
+                                st.info(it["rationale"])
+                            if it.get("human_note"):
+                                st.caption(f"Reviewer note: {it['human_note']}")
+            
+            with hist_tab_trace:
+                episodes = snapshot.get("episodes", [])
+                if not episodes:
+                    st.info("No episodes in this run.")
+                else:
+                    # Episode selector
+                    ep_options = {
+                        f"Episode #{ep['episode_id']} — {ep['model']} — {ep.get('summary', '')[:50]}"
+                        + (f" (escalated from #{ep['escalated_from']})" if ep.get('escalated_from') else ""): i
+                        for i, ep in enumerate(episodes)
+                    }
+                    selected_ep_label = st.selectbox("Select episode", list(ep_options.keys()),
+                                                     key=f"hist_ep_{selected_run_id}")
+                    ep_idx = ep_options[selected_ep_label]
+                    ep = episodes[ep_idx]
+                    
+                    st.markdown(f"**Email ID:** `{ep['email_id']}`")
+                    st.markdown(f"**Model:** {ep['model']}")
+                    if ep.get("summary"):
+                        st.success(f"Outcome: {ep['summary']}")
+                    
+                    # Show traces
+                    st.markdown("**🧵 Step-by-step trace**")
+                    for t in ep.get("traces", []):
+                        payload = t["payload"]
+                        try:
+                            payload = json.loads(payload) if isinstance(payload, str) else payload
+                        except (TypeError, json.JSONDecodeError):
+                            pass
+                        
+                        if t["kind"] == "plan":
+                            st.markdown("**📌 Plan** — classification: "
+                                        f"`{payload.get('classification', '?') if isinstance(payload, dict) else '?'}`")
+                            if isinstance(payload, dict):
+                                for s in payload.get("steps", []):
+                                    st.text(f"  {s}")
+                        elif t["kind"] == "tool_call":
+                            with st.expander(f"🔧 {t['name']} — call", expanded=False):
+                                st.json(payload)
+                        elif t["kind"] == "tool_result":
+                            with st.expander(f"↩️ {t['name']} — result", expanded=False):
+                                if isinstance(payload, (dict, list)):
+                                    st.json(payload)
+                                else:
+                                    st.text(str(payload)[:3000])
+                        elif t["kind"] == "verdict":
+                            icon = ("🟢" if isinstance(payload, dict)
+                                    and payload.get("verdict") == "sufficient" else "🔴")
+                            st.markdown(f"{icon} **Verifier** `{t['name']}`: "
+                                        f"{payload.get('verdict') if isinstance(payload, dict) else payload}")
+                            if isinstance(payload, dict):
+                                st.caption(payload.get("rationale", ""))
+                        elif t["kind"] == "escalation":
+                            st.warning(f"⬆️ Escalated from {t['name']}: {payload}")
+                        elif t["kind"] == "text":
+                            st.caption(f"💬 {payload}")
+                        elif t["kind"] == "token_retry":
+                            p = payload if isinstance(payload, dict) else {}
+                            event = p.get("event", "retry")
+                            if event == "retry":
+                                st.warning(f"⚠️ **Token retry** on `{t['name']}` — {p.get('reason', 'unknown')}")
+                            elif event == "recovered":
+                                st.success(f"✅ **Recovered** on `{t['name']}`")
+                            elif event == "failed":
+                                st.error(f"❌ **Failed** on `{t['name']}` — {p.get('detail', '')}")
+                    
+                    # Show verifications for this episode
+                    verifs = ep.get("verifications", [])
+                    if verifs:
+                        st.markdown("**⚖️ Verifications**")
+                        for v in verifs:
+                            icon = "🟢" if v["verdict"] == "sufficient" else "🔴"
+                            st.markdown(f"{icon} **{v['item_id']}** — {v['verdict']} "
+                                        f"(conf {v['confidence']:.2f})")
+                            st.caption(v.get("rationale", ""))
+            
+            with hist_tab_cost:
+                api_calls = snapshot.get("api_calls", [])
+                if not api_calls:
+                    st.info("No API calls recorded.")
+                else:
+                    # Summary by model
+                    st.markdown("**Cost by model**")
+                    df_model = pd.DataFrame(api_calls).groupby("model").agg({
+                        "cost_usd": "sum",
+                        "input_tokens": "sum",
+                        "output_tokens": "sum",
+                        "cache_read_tokens": "sum",
+                        "cache_write_tokens": "sum",
+                    }).reset_index()
+                    df_model["calls"] = pd.DataFrame(api_calls).groupby("model").size().values
+                    df_model = df_model.rename(columns={
+                        "model": "Model", "cost_usd": "Cost $", "calls": "Calls",
+                        "input_tokens": "Input tok", "output_tokens": "Output tok",
+                        "cache_read_tokens": "Cache read", "cache_write_tokens": "Cache write"
+                    })
+                    st.dataframe(df_model, width="stretch", hide_index=True)
+                    
+                    # Summary by purpose
+                    st.markdown("**Cost by purpose**")
+                    df_purpose = pd.DataFrame(api_calls).groupby("purpose").agg({
+                        "cost_usd": "sum"
+                    }).reset_index().sort_values("cost_usd", ascending=False)
+                    df_purpose["calls"] = pd.DataFrame(api_calls).groupby("purpose").size().values
+                    df_purpose = df_purpose.rename(columns={
+                        "purpose": "Purpose", "cost_usd": "Cost $", "calls": "Calls"
+                    })
+                    st.dataframe(df_purpose, width="stretch", hide_index=True)
+                    
+                    # Full call log
+                    with st.expander("Full API call log"):
+                        df_calls = pd.DataFrame(api_calls)[[
+                            "model", "purpose", "input_tokens", "output_tokens",
+                            "cache_read_tokens", "cache_write_tokens", "cost_usd"
+                        ]]
+                        st.dataframe(df_calls, width="stretch", hide_index=True)
+
 # ------------------------------------------------------------------ evals
+BENCH_BADGES = {
+    "idle": "⚪ idle", "launching": "🚀 launching…", "running": "🏃 running",
+    "finished": "✅ finished", "stopped": "⏹️ stopped",
+    "error": "🔥 error", "crashed": "💀 crashed",
+}
+
+
+def _bench_start() -> None:
+    st.session_state.pop("bm_error", None)
+    try:
+        runctl.bench_start(
+            store, int(st.session_state.bm_runs), st.session_state.bm_mailbox,
+            st.session_state.bm_pbc, st.session_state.bm_profile,
+            budget=st.session_state.bm_budget,
+            groundtruth=st.session_state.get("ev_gt", "input/sample/sample_groundtruth.json"),
+            labels=st.session_state.get("ev_labels", "evals/labels.json"),
+            api_key=(st.session_state.get("rc_api_key") or "").strip())
+    except RuntimeError as e:
+        st.session_state["bm_error"] = str(e)
+
+
+def _bench_stop() -> None:
+    runctl.bench_stop(store)
+
+
+@st.fragment(run_every=2)
+def benchmark_panel() -> None:
+    bs = runctl.bench_state(store)
+    status = bs["status"]
+    st.markdown(f"**Benchmark:** {BENCH_BADGES.get(status, status)}")
+    prog = bs["progress"]
+    if status in ("launching", "running") and prog.get("total"):
+        st.progress(min(prog.get("done", 0) / prog["total"], 1.0),
+                    text=f"{prog.get('done', 0)}/{prog['total']} runs complete")
+        run = bs.get("run") or {}
+        if run.get("total"):
+            st.caption(f"current run: email {run.get('done', 0)}/{run['total']} · "
+                       f"{(run.get('current') or '')[:38]} · "
+                       f"${run.get('cost_usd', 0):.4f} so far")
+    if status == "error" and bs["error"]:
+        st.error(bs["error"])
+    if status == "crashed":
+        st.warning("Benchmark process died — see data/benchmark.log")
+
+    if status in ("launching", "running"):
+        st.button("⏹ Stop benchmark", key="bm_stop", on_click=_bench_stop)
+        st.caption("Stop takes effect after the in-flight run finishes.")
+    else:
+        with st.expander("Benchmark inputs", expanded=False):
+            st.number_input("sample runs", min_value=1, max_value=20, value=3,
+                            step=1, key="bm_runs")
+            st.text_input("mailbox", "input/sample/sample_mailbox.mbox", key="bm_mailbox")
+            st.text_input("PBC list", "input/PBC_List_FY2026.pdf", key="bm_pbc")
+            st.text_input("client profile", "input/Client_Profile.pdf", key="bm_profile")
+            st.number_input("budget $ per run", value=2.0, min_value=0.1, step=0.5,
+                            key="bm_budget")
+        st.button("🏁 Run benchmark", key="bm_start", type="primary",
+                  on_click=_bench_start)
+        st.caption("Each run is a fresh agent pass over the mailbox on a scratch DB "
+                   "(data/benchmark.db) — the live tracker is untouched, and every "
+                   "run is real API spend. Uses the ground truth / labels paths "
+                   "above and the API key from the sidebar (or the environment).")
+        if st.session_state.get("bm_error"):
+            st.error(st.session_state["bm_error"])
+
+    if bs["results"]:
+        st.dataframe(pd.DataFrame([
+            {"Run": r["run"], "Status acc": f"{r['status_accuracy']:.0%}",
+             "Insuff. F1": round(r["insufficiency_f1"], 2),
+             "Tool seq": f"{r['sequence_match']:.0%}",
+             "Cost $": round(r["cost_usd"], 4),
+             "API calls": r["api_calls"], "Escalations": r["escalations"]}
+            for r in bs["results"]]), width="stretch", hide_index=True)
+    if bs["summary"]:
+        sm = bs["summary"]
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Status accuracy", f"{sm['status_accuracy']['mean']:.0%}",
+                  f"± {sm['status_accuracy']['stdev']:.0%}", delta_color="off")
+        a2.metric("Insufficiency F1", f"{sm['insufficiency_f1']['mean']:.2f}",
+                  f"± {sm['insufficiency_f1']['stdev']:.2f}", delta_color="off")
+        a3.metric("Tool-seq match", f"{sm['sequence_match']['mean']:.0%}",
+                  f"± {sm['sequence_match']['stdev']:.0%}", delta_color="off")
+        a4.metric("Cost / run", f"${sm['cost_usd']['mean']:.4f}",
+                  f"± ${sm['cost_usd']['stdev']:.4f}", delta_color="off")
+        st.caption(f"Mean ± stdev over {len(bs['results'])} run(s).")
+
+
 with tab_evals:
     from evals.run_evals import evaluate
 
     c1, c2 = st.columns(2)
-    gt_path = c1.text_input("Ground truth", "input/sample/sample_groundtruth.json")
-    labels_path = c2.text_input("Labels", "evals/labels.json")
+    gt_path = c1.text_input("Ground truth", "input/sample/sample_groundtruth.json",
+                            key="ev_gt")
+    labels_path = c2.text_input("Labels", "evals/labels.json", key="ev_labels")
     st.caption("Evals are pure DB reads — no LLM calls, safe to run any time "
                "(mid-run results reflect emails processed so far).")
 
@@ -563,7 +1001,30 @@ with tab_evals:
                 if row["forbidden_hit"]:
                     st.error(f"Forbidden tool(s) used: {', '.join(row['forbidden_hit'])}")
 
+                # source email + evidence, so a miss can be judged without
+                # leaving the eval page
+                em = store.conn.execute(
+                    "SELECT body, attachments FROM emails WHERE email_id=?",
+                    (row.get("email_id"),)).fetchone()
+                if em:
+                    st.markdown("**Source email**")
+                    st.text((em["body"] or "").strip()[:4000])
+                    for j, att in enumerate(json.loads(em["attachments"] or "[]")):
+                        st.markdown(f"**Evidence: {att['filename']}**")
+                        render_attachment(att["path"], att["filename"],
+                                          key=f"ev_att_{row['email_id']}_{j}")
+                        if Path(att["path"]).exists():
+                            st.download_button(
+                                f"⬇ Download {att['filename']}",
+                                data=Path(att["path"]).read_bytes(),
+                                file_name=att["filename"],
+                                key=f"ev_dl_{row['email_id']}_{j}")
+
         st.subheader("Cost by model")
         st.dataframe(pd.DataFrame([
             {"Model": m["model"], "Calls": m["n"], "USD": round(m["c"], 4)}
             for m in c["by_model"]]), width="stretch", hide_index=True)
+
+    st.divider()
+    st.subheader("Benchmark — repeated sample runs")
+    benchmark_panel()
