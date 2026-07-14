@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE TABLE IF NOT EXISTS trace (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     episode_id INTEGER, seq INTEGER,
-    kind TEXT,           -- plan | tool_call | tool_result | text | verdict | escalation | error
+    kind TEXT,           -- plan | tool_call | tool_result | text | verdict | escalation | token_retry | error
     name TEXT, payload TEXT, ts REAL
 );
 CREATE TABLE IF NOT EXISTS verifications (
@@ -92,6 +92,9 @@ class Store:
         # that execute on different threads (@st.cache_resource).
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Two processes share this DB (the agent runner and the Streamlit UI).
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(_SCHEMA)
         # migrate pre-existing DBs created before later columns were added
         for stmt in (
@@ -289,6 +292,16 @@ class Store:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def reset_all(self) -> None:
+        """Wipe run data for a fresh restart, in place (keeps the file/inode so an
+        open UI connection stays valid, and keeps the OCR cache — content-hash
+        keyed vision transcriptions stay correct and cost money to redo)."""
+        for table in ("items", "documents", "episodes", "trace", "verifications",
+                      "clarifications", "drafts", "api_calls", "emails"):
+            self.conn.execute(f"DELETE FROM {table}")
+        self.conn.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
+        self.conn.commit()
 
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))

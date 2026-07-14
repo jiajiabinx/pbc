@@ -15,6 +15,7 @@ cheap by default, expensive by exception.
 from __future__ import annotations
 
 import json
+import time
 
 import models
 import tools
@@ -177,8 +178,21 @@ def run_mailbox(store: Store, router: models.Router, matcher, profile_text: str,
     """Process the chronological email stream, one episode per email."""
     system = build_system(pbc_items, pbc_header, profile_text)
     results = []
+    total = len(emails)
     for i, email in enumerate(emails, 1):
-        print(f"[{i}/{len(emails)}] {email.date} | {email.from_addr} | {email.subject}")
+        # Cooperative run control, set by the UI (pause between episodes; an
+        # in-flight episode always finishes so the trace stays consistent).
+        while (store.get_meta("run_control") or "run") == "pause":
+            store.set_meta("run_status", "paused")
+            time.sleep(1)
+        if (store.get_meta("run_control") or "run") == "stop":
+            store.set_meta("run_status", "stopped")
+            print("Run stopped by user.")
+            break
+        store.set_meta("run_status", "running")
+        store.set_meta("run_progress", json.dumps(
+            {"done": i - 1, "total": total, "current": email.subject}))
+        print(f"[{i}/{total}] {email.date} | {email.from_addr} | {email.subject}")
         store.add_email(email.__dict__ | {"to_addrs": email.to_addrs})
         try:
             res = run_episode(store, router, matcher, profile_text, system, email)
@@ -189,4 +203,6 @@ def run_mailbox(store: Store, router: models.Router, matcher, profile_text: str,
         print(f"  -> {res['model']} | {res['outcome']} | {res['summary']}"
               f" | total ${router.spent():.4f}")
         results.append(res | {"email_id": email.email_id})
+        store.set_meta("run_progress", json.dumps(
+            {"done": i, "total": total, "current": email.subject}))
     return results

@@ -498,7 +498,8 @@ def _tool_verify_item(ctx: ToolContext, inp: dict) -> str:
         "10 confirmations, one bank account of several), informal evidence (handwritten/"
         "whiteboard where a formal document is required), unsigned where signature is "
         "required. Partial coverage of a multi-part item is insufficient. Evaluate each "
-        "acceptance criterion separately with evidence citations."
+        "acceptance criterion separately with short evidence citations (one sentence each; "
+        "no long quotes). Keep rationale to 2 sentences max."
     )
     user = (
         f"CLIENT PROFILE:\n{ctx.profile_text}\n\n"
@@ -513,7 +514,7 @@ def _tool_verify_item(ctx: ToolContext, inp: dict) -> str:
     )
     verdict = models.structured_json(
         ctx.router, models.VERIFIER, purpose=f"verify:{item['item_id']}",
-        episode_id=ctx.episode_id, max_tokens=2500,
+        episode_id=ctx.episode_id, max_tokens=4000,
         schema=_VERIFY_SCHEMA, system=system, user=user)
     ctx.store.add_verification(item["item_id"], doc["doc_id"], verdict["verdict"],
                                verdict["rationale"], verdict["criteria"],

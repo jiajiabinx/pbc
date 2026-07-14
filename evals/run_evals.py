@@ -4,7 +4,8 @@
         --groundtruth input/sample/sample_groundtruth.json --labels evals/labels.json
 
 Reports: per-status precision/recall, insufficiency-detection F1, expected
-tool-call-sequence match rate, and measured cost. No LLM calls.
+tool-call-sequence match rate, and measured cost. No LLM calls. The scoring
+logic lives in `evaluate()` so the Streamlit UI can run it in-process.
 """
 from __future__ import annotations
 
@@ -39,17 +40,14 @@ def prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
     return p, r, f
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="data/pbc.db")
-    ap.add_argument("--groundtruth", default="input/sample/sample_groundtruth.json")
-    ap.add_argument("--labels", default="evals/labels.json")
-    args = ap.parse_args()
-
-    conn = sqlite3.connect(args.db)
+def evaluate(db: str = "data/pbc.db",
+             groundtruth: str = "input/sample/sample_groundtruth.json",
+             labels_path: str = "evals/labels.json") -> dict:
+    """Score a run. Returns a plain dict (JSON-safe) for CLI or UI rendering."""
+    conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
-    gt = json.loads(Path(args.groundtruth).read_text())["expected_status"]
-    labels = json.loads(Path(args.labels).read_text())
+    gt = json.loads(Path(groundtruth).read_text())["expected_status"]
+    labels = json.loads(Path(labels_path).read_text())
     equiv = labels.get("status_equivalences", {})
 
     # ---------------- status scoring ----------------
@@ -57,7 +55,7 @@ def main() -> int:
                  for r in conn.execute("SELECT item_id, status FROM items")}
     expected = {k: v["status"] for k, v in gt.items()}
 
-    per_class = defaultdict(Counter)
+    per_class: dict[str, Counter] = defaultdict(Counter)
     correct = 0
     mismatches = []
     for item_id, exp in expected.items():
@@ -68,68 +66,105 @@ def main() -> int:
         else:
             per_class[exp]["fn"] += 1
             per_class[pred]["fp"] += 1
-            mismatches.append((item_id, exp, pred))
+            mismatches.append({"item_id": item_id, "expected": exp, "predicted": pred})
 
-    print("=" * 64)
-    print(f"STATUS ACCURACY: {correct}/{len(expected)} "
-          f"({correct / len(expected):.0%})")
-    print(f"{'status':<14}{'precision':>10}{'recall':>10}{'f1':>8}")
+    classes = {}
     for cls in sorted(set(expected.values()) | set(predicted.values())):
         c = per_class[cls]
         p, r, f = prf(c["tp"], c["fp"], c["fn"])
-        print(f"{cls:<14}{p:>10.2f}{r:>10.2f}{f:>8.2f}")
-    if mismatches:
-        print("\nMismatches (item: expected -> predicted):")
-        for m in mismatches:
-            print(f"  {m[0]}: {m[1]} -> {m[2]}")
+        classes[cls] = {"precision": p, "recall": r, "f1": f,
+                        "support": c["tp"] + c["fn"]}
 
-    # insufficiency-detection F1 (binary)
-    tp = sum(1 for k in expected if expected[k] == "Insufficient" and predicted.get(k) == "Insufficient")
-    fp = sum(1 for k in expected if expected[k] != "Insufficient" and predicted.get(k) == "Insufficient")
-    fn = sum(1 for k in expected if expected[k] == "Insufficient" and predicted.get(k) != "Insufficient")
-    p, r, f = prf(tp, fp, fn)
-    print(f"\nINSUFFICIENCY DETECTION: precision={p:.2f} recall={r:.2f} F1={f:.2f}")
+    tp = sum(1 for k in expected
+             if expected[k] == "Insufficient" and predicted.get(k) == "Insufficient")
+    fp = sum(1 for k in expected
+             if expected[k] != "Insufficient" and predicted.get(k) == "Insufficient")
+    fn = sum(1 for k in expected
+             if expected[k] == "Insufficient" and predicted.get(k) != "Insufficient")
+    ip, ir, if1 = prf(tp, fp, fn)
 
     # ---------------- tool-sequence scoring ----------------
     # Episodes in email-chronological order; for escalated emails, judge the
     # final (deepest) episode's tool calls, since that run made the decisions.
     emails = conn.execute("SELECT email_id, subject, date FROM emails ORDER BY date").fetchall()
-    seq_labels = labels["expected_tool_sequences"]
-    matched = total = 0
-    print("\nTOOL-SEQUENCE MATCH:")
-    for email_row, label in zip(emails, seq_labels):
+    sequences = []
+    matched = 0
+    for email_row, label in zip(emails, labels["expected_tool_sequences"]):
         eps = conn.execute(
             "SELECT episode_id FROM episodes WHERE email_id=? ORDER BY episode_id DESC LIMIT 1",
             (email_row["email_id"],)).fetchone()
-        if eps is None:
-            print(f"  MISS  (no episode) {label['subject']} {label['date']}")
-            total += 1
-            continue
-        calls = [r["name"] for r in conn.execute(
+        calls = [] if eps is None else [r["name"] for r in conn.execute(
             "SELECT name FROM trace WHERE episode_id=? AND kind IN ('plan','tool_call') ORDER BY seq",
             (eps["episode_id"],))]
-        ok = subsequence_match(label["required"], calls)
-        for forb in label.get("forbidden", []):
-            if forb in calls:
-                ok = False
-        total += 1
-        matched += ok
-        dt = datetime.fromtimestamp(email_row["date"]).strftime("%m-%d %H:%M")
-        print(f"  {'OK  ' if ok else 'FAIL'}  [{dt}] {label['note'][:60]}"
-              + ("" if ok else f"\n        actual: {calls}"))
-    print(f"  -> {matched}/{total} ({matched / total:.0%})" if total else "  (none)")
+        ok = eps is not None and subsequence_match(label["required"], calls)
+        violated = [f for f in label.get("forbidden", []) if f in calls]
+        if violated:
+            ok = False
+        if ok:
+            matched += 1
+        sequences.append({
+            "date": datetime.fromtimestamp(email_row["date"]).strftime("%m-%d %H:%M"),
+            "subject": email_row["subject"], "note": label["note"], "ok": ok,
+            "required": label["required"], "forbidden_hit": violated, "actual": calls,
+            "no_episode": eps is None,
+        })
 
     # ---------------- cost ----------------
-    cost = conn.execute("SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM api_calls").fetchone()
-    by_model = conn.execute(
-        "SELECT model, COUNT(*) n, SUM(cost_usd) c FROM api_calls GROUP BY model").fetchall()
+    cost = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM api_calls").fetchone()
+    by_model = [dict(r) for r in conn.execute(
+        "SELECT model, COUNT(*) n, SUM(cost_usd) c FROM api_calls GROUP BY model")]
     escalations = conn.execute(
         "SELECT COUNT(*) FROM episodes WHERE escalated_from IS NOT NULL").fetchone()[0]
-    print(f"\nCOST: ${cost['c']:.4f} across {cost['n']} API calls "
-          f"({escalations} escalation(s))")
-    for m in by_model:
-        print(f"  {m['model']}: {m['n']} calls, ${m['c']:.4f}")
 
+    return {
+        "status": {"correct": correct, "total": len(expected), "classes": classes,
+                   "mismatches": mismatches},
+        "insufficiency": {"precision": ip, "recall": ir, "f1": if1,
+                          "tp": tp, "fp": fp, "fn": fn},
+        "sequences": {"matched": matched, "total": len(sequences), "rows": sequences},
+        "cost": {"total_usd": cost["c"], "calls": cost["n"],
+                 "escalations": escalations, "by_model": by_model},
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default="data/pbc.db")
+    ap.add_argument("--groundtruth", default="input/sample/sample_groundtruth.json")
+    ap.add_argument("--labels", default="evals/labels.json")
+    args = ap.parse_args()
+
+    r = evaluate(args.db, args.groundtruth, args.labels)
+
+    print("=" * 64)
+    s = r["status"]
+    print(f"STATUS ACCURACY: {s['correct']}/{s['total']} ({s['correct'] / s['total']:.0%})")
+    print(f"{'status':<14}{'precision':>10}{'recall':>10}{'f1':>8}")
+    for cls, m in s["classes"].items():
+        print(f"{cls:<14}{m['precision']:>10.2f}{m['recall']:>10.2f}{m['f1']:>8.2f}")
+    if s["mismatches"]:
+        print("\nMismatches (item: expected -> predicted):")
+        for m in s["mismatches"]:
+            print(f"  {m['item_id']}: {m['expected']} -> {m['predicted']}")
+
+    i = r["insufficiency"]
+    print(f"\nINSUFFICIENCY DETECTION: precision={i['precision']:.2f} "
+          f"recall={i['recall']:.2f} F1={i['f1']:.2f}")
+
+    q = r["sequences"]
+    print("\nTOOL-SEQUENCE MATCH:")
+    for row in q["rows"]:
+        print(f"  {'OK  ' if row['ok'] else 'FAIL'}  [{row['date']}] {row['note'][:60]}"
+              + ("" if row["ok"] else f"\n        actual: {row['actual']}"))
+    if q["total"]:
+        print(f"  -> {q['matched']}/{q['total']} ({q['matched'] / q['total']:.0%})")
+
+    c = r["cost"]
+    print(f"\nCOST: ${c['total_usd']:.4f} across {c['calls']} API calls "
+          f"({c['escalations']} escalation(s))")
+    for m in c["by_model"]:
+        print(f"  {m['model']}: {m['n']} calls, ${m['c']:.4f}")
     print("=" * 64)
     return 0
 

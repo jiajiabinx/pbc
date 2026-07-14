@@ -91,29 +91,95 @@ def structured_json(router: Router, model: str, *, purpose: str, schema: dict, u
     max_tokens, so a JSON answer can be truncated mid-string ('Unterminated
     string'). We disable thinking for these constrained-judgment calls, join
     every text block (a thinking-only response has none), and retry with a
-    doubled budget on truncation or unparseable JSON.
+    doubled budget + brevity reminder on truncation or unparseable JSON.
+    Retries are written to the episode trace as kind='token_retry' so the UI
+    can show hit-limit → 2× budget explicitly.
     """
+    base_user = user
     kwargs: dict = {
         "output_config": {"format": {"type": "json_schema", "schema": schema}},
-        "messages": [{"role": "user", "content": user}],
     }
     if system:
         kwargs["system"] = system
     if model.startswith(("claude-sonnet-5", "claude-opus")):
         kwargs["thinking"] = {"type": "disabled"}
 
+    def _trace(payload: dict) -> None:
+        store = getattr(router, "store", None)
+        if store is not None and episode_id is not None:
+            store.add_trace(episode_id, "token_retry", purpose, payload)
+
     last_err = "no attempt"
-    for _attempt in range(3):
+    started_at = max_tokens
+    for attempt in range(3):
+        content = base_user
+        if attempt > 0:
+            content += (
+                "\n\nIMPORTANT: Previous reply was truncated or invalid JSON. "
+                "Reply with COMPLETE valid JSON only. Keep rationale and each "
+                "evidence string to one short sentence; omit long quotes."
+            )
+        kwargs["messages"] = [{"role": "user", "content": content}]
         resp = router.call(model, purpose=purpose, episode_id=episode_id,
                            max_tokens=max_tokens, **kwargs)
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        usage = getattr(resp, "usage", None)
+        out_tok = getattr(usage, "output_tokens", None) if usage else None
+
         if resp.stop_reason == "max_tokens" or not text:
+            reason = ("hit_max_tokens" if resp.stop_reason == "max_tokens"
+                      else "empty_text")
+            next_budget = max_tokens * 2
             last_err = f"truncated at {max_tokens} tokens (stop_reason={resp.stop_reason})"
-            max_tokens *= 2
+            _trace({
+                "event": "retry",
+                "reason": reason,
+                "detail": last_err,
+                "attempt": attempt + 1,
+                "max_tokens": max_tokens,
+                "next_max_tokens": next_budget,
+                "stop_reason": resp.stop_reason,
+                "output_tokens": out_tok,
+            })
+            max_tokens = next_budget
             continue
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError as e:
+            next_budget = max_tokens * 2
             last_err = f"bad JSON: {e}"
-            max_tokens *= 2
+            _trace({
+                "event": "retry",
+                "reason": "unterminated_or_invalid_json",
+                "detail": str(e),
+                "attempt": attempt + 1,
+                "max_tokens": max_tokens,
+                "next_max_tokens": next_budget,
+                "stop_reason": resp.stop_reason,
+                "output_tokens": out_tok,
+            })
+            max_tokens = next_budget
+            continue
+
+        if attempt > 0:
+            _trace({
+                "event": "recovered",
+                "reason": "ok_after_retry",
+                "detail": f"parsed on attempt {attempt + 1}",
+                "attempt": attempt + 1,
+                "max_tokens": max_tokens,
+                "started_max_tokens": started_at,
+                "stop_reason": resp.stop_reason,
+                "output_tokens": out_tok,
+            })
+        return parsed
+
+    _trace({
+        "event": "failed",
+        "reason": "exhausted_retries",
+        "detail": last_err,
+        "attempt": 3,
+        "max_tokens": max_tokens,
+        "started_max_tokens": started_at,
+    })
     raise ValueError(f"structured output failed after 3 attempts ({purpose}): {last_err}")

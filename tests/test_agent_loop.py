@@ -95,6 +95,20 @@ def test_escalation_reruns_on_next_model(store):
     assert "ambiguous" in esc["payload"]
 
 
+def test_run_control_stop_halts_before_next_episode(store):
+    # UI sets run_control=stop -> the mailbox loop must not start new episodes.
+    store.set_meta("run_control", "stop")
+    router = FakeRouter({})  # any model call would raise (empty script)
+    results = agent.run_mailbox(store, router, FakeMatcher(), "profile",
+                                [{"item_id": "PBC-01", "category": "c", "priority": "High",
+                                  "description": "d", "acceptance": "a", "expected_docs": "pdf"}],
+                                "header", [make_email()])
+    assert results == []
+    assert store.get_meta("run_status") == "stopped"
+    assert router.calls == []
+    store.set_meta("run_control", "run")  # reset for other tests
+
+
 def test_status_guard_error_returned_to_model_not_raised(store):
     router = FakeRouter({models.WORKER: [
         response([tool_use("submit_plan", {"classification": "client_documents", "steps": ["x"]})]),

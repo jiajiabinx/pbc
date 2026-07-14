@@ -75,31 +75,56 @@ def main() -> int:
     store = Store(args.db)
     router = models.Router(store, budget_usd=args.budget)
 
-    pbc_items, pbc_header = ingest.parse_pbc_list(args.pbc, llm_fallback=llm_pbc_fallback(router))
-    print(f"PBC list: {len(pbc_items)} items parsed")
-    store.load_items(pbc_items)
-    store.set_meta("pbc_header", pbc_header)
+    # advertise this run to the UI (see runctl.py)
+    store.set_meta("run_pid", str(os.getpid()))
+    store.set_meta("run_status", "running")
+    store.set_meta("run_error", "")
+    store.set_meta("run_args", json.dumps(
+        {"mailbox": args.mailbox, "pbc": args.pbc, "profile": args.profile,
+         "budget": args.budget}))
+    if store.get_meta("run_control") not in ("run", "pause"):
+        store.set_meta("run_control", "run")
 
-    profile_text = ingest.load_profile(args.profile)
-    store.set_meta("profile", profile_text)
+    try:
+        pbc_items, pbc_header = ingest.parse_pbc_list(args.pbc,
+                                                      llm_fallback=llm_pbc_fallback(router))
+        print(f"PBC list: {len(pbc_items)} items parsed")
+        store.load_items(pbc_items)
+        store.set_meta("pbc_header", pbc_header)
 
-    matcher = embeddings.ItemMatcher(pbc_items)
-    print(f"Embeddings backend: {matcher.backend}")
+        profile_text = ingest.load_profile(args.profile)
+        store.set_meta("profile", profile_text)
 
-    emails = ingest.load_mailbox(args.mailbox)
-    already = {r["email_id"] for r in store.conn.execute(
-        "SELECT email_id FROM emails WHERE processed_at IS NOT NULL")}
-    todo = [e for e in emails if e.email_id not in already]
-    print(f"Mailbox: {len(emails)} emails ({len(todo)} unprocessed)")
+        matcher = embeddings.ItemMatcher(pbc_items)
+        print(f"Embeddings backend: {matcher.backend}")
 
-    agent.run_mailbox(store, router, matcher, profile_text, pbc_items, pbc_header, todo)
+        emails = ingest.load_mailbox(args.mailbox)
+        already = {r["email_id"] for r in store.conn.execute(
+            "SELECT email_id FROM emails WHERE processed_at IS NOT NULL")}
+        todo = [e for e in emails if e.email_id not in already]
+        print(f"Mailbox: {len(emails)} emails ({len(todo)} unprocessed)")
 
-    if not args.no_drafts:
-        try:
-            ids = drafts_mod.generate_drafts(store, router, profile_text)
-            print(f"Drafted {len(ids)} follow-up email(s) — review in the UI")
-        except models.BudgetExceeded as e:
-            print(f"Skipping drafts: {e}", file=sys.stderr)
+        results = agent.run_mailbox(store, router, matcher, profile_text,
+                                    pbc_items, pbc_header, todo)
+        stopped = store.get_meta("run_status") == "stopped"
+        exceeded = any(r.get("outcome") == "budget_exceeded" for r in results)
+
+        if not args.no_drafts and not stopped and not exceeded:
+            store.set_meta("run_status", "drafting")
+            try:
+                ids = drafts_mod.generate_drafts(store, router, profile_text)
+                print(f"Drafted {len(ids)} follow-up email(s) — review in the UI")
+            except models.BudgetExceeded as e:
+                exceeded = True
+                print(f"Skipping drafts: {e}", file=sys.stderr)
+
+        store.set_meta("run_status",
+                       "stopped" if stopped else
+                       "budget_exceeded" if exceeded else "finished")
+    except Exception as e:
+        store.set_meta("run_status", "error")
+        store.set_meta("run_error", f"{type(e).__name__}: {e}")
+        raise
 
     print(f"\nTotal measured cost: ${store.total_cost():.4f} (budget ${args.budget:.2f})")
     print("Tracker:")
