@@ -42,6 +42,30 @@ def test_state_reports_crash_when_runner_died_at_launch(store):
     assert runctl.state(store)["status"] == "crashed"
 
 
+def test_pid_alive_detects_foreign_zombie():
+    # A runner spawned by a *previous* UI process: we can't waitpid it, and
+    # os.kill(pid, 0) succeeds on zombies, so the ps state check must catch it.
+    parent = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys, time\n"
+         "p = subprocess.Popen([sys.executable, '-c', 'pass'])\n"
+         "print(p.pid, flush=True)\n"
+         "time.sleep(30)\n"],  # parent lingers without reaping -> child zombifies
+        stdout=subprocess.PIPE, text=True)
+    try:
+        zombie_pid = int(parent.stdout.readline())
+        for _ in range(50):
+            out = subprocess.run(["ps", "-p", str(zombie_pid), "-o", "stat="],
+                                 capture_output=True, text=True).stdout.strip()
+            if out.startswith("Z"):
+                break
+            time.sleep(0.02)
+        assert runctl._pid_alive(str(zombie_pid)) is False
+    finally:
+        parent.kill()
+        parent.wait()
+
+
 def test_pid_alive_basics():
     assert runctl._pid_alive(None) is False
     assert runctl._pid_alive("") is False
@@ -60,3 +84,20 @@ def test_start_fails_fast_without_api_key(store, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
         runctl.start(store, "mbox", "pbc.pdf", "profile.pdf")
+
+
+def test_start_passes_ui_key_to_runner_env_only(store, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    seen = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen["env"] = kwargs["env"]
+        return type("P", (), {"pid": 12345})()
+
+    monkeypatch.setattr(runctl.subprocess, "Popen", fake_popen)
+    runctl.start(store, "mbox", "pbc.pdf", "profile.pdf", api_key="sk-ant-ui-field")
+    assert seen["env"]["ANTHROPIC_API_KEY"] == "sk-ant-ui-field"
+    # the key must never be persisted to the shared DB
+    rows = store.conn.execute("SELECT value FROM meta").fetchall()
+    assert not any("sk-ant-ui-field" in r["value"] for r in rows)

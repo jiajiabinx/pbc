@@ -38,9 +38,14 @@ def _pid_alive(pid: str | None) -> bool:
         pass  # not our child (the UI restarted since the run began)
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+    # os.kill(pid, 0) also succeeds for zombies we can't reap (the runner was
+    # spawned by a previous UI process that still exists) — check the process
+    # state instead of trusting the signal probe.
+    stat = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                          capture_output=True, text=True).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
 
 
 def state(store) -> dict:
@@ -63,16 +68,20 @@ def request(store, control: str) -> None:
 
 
 def start(store, mailbox: str, pbc: str, profile: str, *,
-          fresh: bool = False, budget: float = 2.0) -> int:
-    """Spawn `run.py` as a background process (inherits the UI's environment,
-    so ANTHROPIC_API_KEY must be set where Streamlit was launched)."""
+          fresh: bool = False, budget: float = 2.0, api_key: str = "") -> int:
+    """Spawn `run.py` as a background process. The Anthropic key comes from the
+    `api_key` argument (the UI field) or falls back to the UI's environment.
+    The key is only put in the child's env — never written to the store."""
     if state(store)["alive"]:
         raise RuntimeError("A run is already in progress.")
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+    env = os.environ.copy()
+    if api_key:
+        env["ANTHROPIC_API_KEY"] = api_key
+    if not (env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN")):
         raise RuntimeError(
-            "ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) is not set in the UI's "
-            "environment — the runner would exit immediately. Restart Streamlit "
-            "from a shell where the key is exported.")
+            "No Anthropic API key — the runner would exit immediately. Paste a "
+            "key in the run inputs, or restart Streamlit from a shell where "
+            "ANTHROPIC_API_KEY is exported.")
     if fresh:
         store.reset_all()
     store.set_meta("run_control", "run")
@@ -84,7 +93,8 @@ def start(store, mailbox: str, pbc: str, profile: str, *,
     root = Path(__file__).resolve().parent
     (root / "data").mkdir(exist_ok=True)
     with open(root / LOG_PATH, "ab") as log:
-        proc = subprocess.Popen(cmd, cwd=str(root), stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, cwd=str(root), stdout=log,
+                                stderr=subprocess.STDOUT, env=env)
     store.set_meta("run_pid", str(proc.pid))
     store.set_meta("run_args", json.dumps(
         {"mailbox": mailbox, "pbc": pbc, "profile": profile, "budget": budget}))

@@ -7,16 +7,28 @@ reasoning traces a partner could defend to a PCAOB inspector.
 
 ```bash
 pip install -r requirements.txt        # sentence-transformers is optional (auto-fallback)
-export ANTHROPIC_API_KEY=sk-ant-...
-python run.py --mailbox input/sample/sample_mailbox.mbox \
-              --pbc input/PBC_List_FY2026.pdf --profile input/Client_Profile.pdf
+export ANTHROPIC_API_KEY=sk-ant-...    # or paste a key in the sidebar's run inputs
 streamlit run ui.py                    # Tracker · Agent trace · Follow-up review
 python evals/run_evals.py              # scores the run against ground truth
 python -m pytest tests/                # deterministic tests, no LLM calls
 ```
 
-Swap `--mailbox/--pbc/--profile` for the held-out set — the PBC list is the
-config, parsed at runtime (regex-parsed, with a one-call LLM fallback for
+Runs are launched from the UI sidebar: set the mailbox / PBC list / client
+profile paths (defaults point at the sample set), then **▶ Start** (processes
+only emails not already in the tracker) or **🔁 Restart fresh** (wipes tracker,
+traces and drafts, keeps the OCR cache). The sidebar shows live status and
+progress, with cooperative **⏸ Pause / ⏹ Stop** — they take effect after the
+in-flight email finishes so the trace stays consistent.
+
+For headless / scripted runs the CLI still works and writes to the same DB:
+
+```bash
+python run.py --mailbox input/sample/sample_mailbox.mbox \
+              --pbc input/PBC_List_FY2026.pdf --profile input/Client_Profile.pdf
+```
+
+Swap the mailbox / PBC / profile inputs for the held-out set — the PBC list is
+the config, parsed at runtime (regex-parsed, with a one-call LLM fallback for
 unfamiliar list formats). Nothing engagement-specific is hardcoded.
 
 ## Architecture
@@ -40,7 +52,8 @@ for each email (one *episode*):            ┌─ tools.py ───────
   drafts.py: outstanding items grouped     └──────────────────────────────┘
   per recipient → one draft each
         ▼
-  ui.py (Streamlit): Tracker · Agent trace · Follow-up review (send mocked)
+  ui.py (Streamlit): Run control (start/pause/stop via runctl.py) ·
+  Tracker · Agent trace · Follow-up review (send mocked)
 ```
 
 **Dynamic control flow, not a pipeline.** Every episode is a

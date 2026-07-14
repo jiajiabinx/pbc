@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import zipfile
 from datetime import datetime
@@ -95,7 +96,8 @@ def _rc_start(fresh: bool) -> None:
     try:
         runctl.start(store, st.session_state.rc_mailbox, st.session_state.rc_pbc,
                      st.session_state.rc_profile, budget=st.session_state.rc_budget,
-                     fresh=fresh)
+                     fresh=fresh,
+                     api_key=(st.session_state.get("rc_api_key") or "").strip())
     except RuntimeError as e:
         st.session_state["rc_error"] = str(e)
 
@@ -139,6 +141,14 @@ def run_control_panel():
                           "input/Client_Profile.pdf"), key="rc_profile")
             st.number_input("budget $", value=float(prev.get("budget", 2.0)),
                             min_value=0.1, step=0.5, key="rc_budget")
+            st.text_input(
+                "Anthropic API key", key="rc_api_key", type="password",
+                placeholder=("using ANTHROPIC_API_KEY from the environment"
+                             if os.environ.get("ANTHROPIC_API_KEY")
+                             or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                             else "sk-ant-…"),
+                help="Passed to the runner's environment only — never stored. "
+                     "Leave empty to use the key Streamlit was launched with.")
         c1, c2 = st.columns(2)
         c1.button("▶ Start", key="rc_start", type="primary", width="stretch",
                   help="Resume: processes only emails not already in the tracker",
