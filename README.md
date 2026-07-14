@@ -8,8 +8,8 @@ reasoning traces a partner could defend to a PCAOB inspector.
 ```bash
 pip install -r requirements.txt        # sentence-transformers is optional (auto-fallback)
 export ANTHROPIC_API_KEY=sk-ant-...
-python run.py --mailbox sample/sample_mailbox.mbox \
-              --pbc PBC_List_FY2026.pdf --profile Client_Profile.pdf
+python run.py --mailbox input/sample/sample_mailbox.mbox \
+              --pbc input/PBC_List_FY2026.pdf --profile input/Client_Profile.pdf
 streamlit run ui.py                    # Tracker · Agent trace · Follow-up review
 python evals/run_evals.py              # scores the run against ground truth
 python -m pytest tests/                # deterministic tests, no LLM calls

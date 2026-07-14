@@ -1,7 +1,7 @@
 anthropic>=0.90
 pdfplumber>=0.11
 openpyxl>=3.1
-streamlit>=1.38
+streamlit[pdf]>=1.38
 pandas>=2.0
 pytest>=8.0
 # Local embeddings for candidate matching ($0, offline). Heavy (pulls torch);

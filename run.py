@@ -1,7 +1,7 @@
 """CLI entry point — cold run from a clean checkout:
 
-    python run.py --mailbox sample/sample_mailbox.mbox \\
-                  --pbc PBC_List_FY2026.pdf --profile Client_Profile.pdf
+    python run.py --mailbox input/sample/sample_mailbox.mbox \\
+                  --pbc input/PBC_List_FY2026.pdf --profile input/Client_Profile.pdf
     streamlit run ui.py
 """
 from __future__ import annotations

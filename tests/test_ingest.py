@@ -4,7 +4,7 @@ import pytest
 
 import ingest
 
-SAMPLE = Path(__file__).resolve().parent.parent / "sample"
+SAMPLE = Path(__file__).resolve().parent.parent / "input" / "sample"
 
 
 @pytest.fixture(scope="module")

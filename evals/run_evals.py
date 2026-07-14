@@ -1,7 +1,7 @@
 """Eval harness: score a completed run against ground truth + labeled tool sequences.
 
     python evals/run_evals.py --db data/pbc.db \\
-        --groundtruth sample/sample_groundtruth.json --labels evals/labels.json
+        --groundtruth input/sample/sample_groundtruth.json --labels evals/labels.json
 
 Reports: per-status precision/recall, insufficiency-detection F1, expected
 tool-call-sequence match rate, and measured cost. No LLM calls.
@@ -42,7 +42,7 @@ def prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="data/pbc.db")
-    ap.add_argument("--groundtruth", default="sample/sample_groundtruth.json")
+    ap.add_argument("--groundtruth", default="input/sample/sample_groundtruth.json")
     ap.add_argument("--labels", default="evals/labels.json")
     args = ap.parse_args()
 
