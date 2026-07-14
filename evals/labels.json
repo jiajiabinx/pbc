@@ -1,0 +1,108 @@
+{
+  "comment": "Expected end-state statuses come from sample_groundtruth.json. expected_tool_sequences are hand-labeled required subsequences per email, in chronological order; extra tool calls between required ones are fine. 'a|b' means either tool satisfies the step.",
+  "status_equivalences": {
+    "Requested": "Not started",
+    "Under review": "Received"
+  },
+  "expected_tool_sequences": [
+    {
+      "subject": "FY2026 audit kickoff and initial PBC",
+      "date": "2026-07-01T09:12",
+      "note": "auditor kickoff, no documents to verify",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["verify_item", "register_document"]
+    },
+    {
+      "subject": "Re: FY2026 audit kickoff and initial PBC",
+      "date": "2026-07-01T14:30",
+      "note": "3 client attachments: bank stmt, FA register, AR aging",
+      "required": ["submit_plan", "register_document", "verify_item", "update_item_status", "done"]
+    },
+    {
+      "subject": "Re: FY2026 audit kickoff and initial PBC",
+      "date": "2026-07-02T08:45",
+      "note": "auditor notes PBC-04 partial and requests PBC-08 invoices; no new docs",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["register_document"]
+    },
+    {
+      "subject": "PBC-23 board minutes",
+      "date": "2026-07-02T10:00",
+      "note": "auditor request only",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["verify_item", "register_document"]
+    },
+    {
+      "subject": "Re: PBC-23 board minutes",
+      "date": "2026-07-02T15:12",
+      "note": "one board minutes PDF (partial coverage of PBC-23)",
+      "required": ["submit_plan", "register_document", "verify_item", "update_item_status", "done"]
+    },
+    {
+      "subject": "PBC-11 customer confirmations",
+      "date": "2026-07-03T08:15",
+      "note": "auditor request only",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["verify_item", "register_document"]
+    },
+    {
+      "subject": "Re: FY2026 audit kickoff and initial PBC",
+      "date": "2026-07-03T11:20",
+      "note": "BrewTech invoice for PBC-08 (Denver refurb still missing)",
+      "required": ["submit_plan", "register_document", "verify_item", "update_item_status", "done"]
+    },
+    {
+      "subject": "Re: FY2026 audit kickoff and initial PBC",
+      "date": "2026-07-03T16:05",
+      "note": "signed going concern memo for PBC-26",
+      "required": ["submit_plan", "register_document", "verify_item", "update_item_status", "done"]
+    },
+    {
+      "subject": "PBC-05 bank reconciliations",
+      "date": "2026-07-05T10:00",
+      "note": "auditor request only",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["verify_item", "register_document"]
+    },
+    {
+      "subject": "Re: PBC-05 bank reconciliations",
+      "date": "2026-07-05T14:55",
+      "note": "whiteboard photo of a working recon — needs OCR; informal evidence",
+      "required": ["submit_plan", "register_document", "ocr_image|parse_pdf|verify_item", "verify_item", "update_item_status", "done"]
+    },
+    {
+      "subject": "Re: PBC-05 bank reconciliations",
+      "date": "2026-07-05T17:30",
+      "note": "auditor rejects photo, needs typed recons + other accounts",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["register_document"]
+    },
+    {
+      "subject": "Re: PBC-23 board minutes",
+      "date": "2026-07-06T09:00",
+      "note": "auditor acknowledges receipt, still needs remaining meetings",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["register_document"]
+    },
+    {
+      "subject": "Re: PBC-23 board minutes",
+      "date": "2026-07-06T17:40",
+      "note": "client 'working on it' — no action",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["register_document", "verify_item"]
+    },
+    {
+      "subject": "Re: PBC-11 customer confirmations",
+      "date": "2026-07-08T13:22",
+      "note": "zip with 3 of 10 signed confirmations",
+      "required": ["submit_plan", "register_document", "unzip", "verify_item", "update_item_status", "done"]
+    },
+    {
+      "subject": "Re: PBC-11 customer confirmations",
+      "date": "2026-07-08T18:00",
+      "note": "auditor acknowledges, waiting on remaining 7",
+      "required": ["submit_plan", "done"],
+      "forbidden": ["register_document"]
+    }
+  ]
+}

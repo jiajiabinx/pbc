@@ -1,0 +1,149 @@
+{
+  "set": "sample",
+  "expected_status": {
+    "PBC-01": {
+      "status": "Not started",
+      "reason": "Adjusted TB not yet sent"
+    },
+    "PBC-02": {
+      "status": "Not started"
+    },
+    "PBC-03": {
+      "status": "Not started"
+    },
+    "PBC-04": {
+      "status": "Insufficient",
+      "reason": "Only Silverline operating account received; PBC-04 requires all operating and money-market accounts. Money-market and Peak National still outstanding.",
+      "evidence": [
+        "Silverline_Operating_Q4_FY26.pdf"
+      ]
+    },
+    "PBC-05": {
+      "status": "Insufficient",
+      "reason": "Whiteboard photo is informal; audit senior explicitly rejected pending typed reconciliation. Only one account covered.",
+      "evidence": [
+        "IMG_2847_wb_recon.jpg"
+      ]
+    },
+    "PBC-06": {
+      "status": "Not started"
+    },
+    "PBC-07": {
+      "status": "Received",
+      "evidence": [
+        "FixedAssetRegister_FY26.xlsx"
+      ]
+    },
+    "PBC-08": {
+      "status": "Insufficient",
+      "reason": "Only BrewTech invoice received; Denver HQ refurb ($185k, also >$10k threshold) still outstanding per Jenna's reply.",
+      "evidence": [
+        "Invoice_BrewTech_FA-0189.pdf"
+      ]
+    },
+    "PBC-09": {
+      "status": "Not started"
+    },
+    "PBC-10": {
+      "status": "Received",
+      "evidence": [
+        "AR_Aging_YE_2026-06-30.xlsx"
+      ]
+    },
+    "PBC-11": {
+      "status": "Insufficient",
+      "reason": "3 of top-10 confirmations received. 7 outstanding.",
+      "evidence": [
+        "Customer_Confirmations_Batch1.zip"
+      ]
+    },
+    "PBC-12": {
+      "status": "Not started"
+    },
+    "PBC-13": {
+      "status": "Not started"
+    },
+    "PBC-14": {
+      "status": "Not started"
+    },
+    "PBC-15": {
+      "status": "Not started"
+    },
+    "PBC-16": {
+      "status": "Not started"
+    },
+    "PBC-17": {
+      "status": "Not started"
+    },
+    "PBC-18": {
+      "status": "Not started"
+    },
+    "PBC-19": {
+      "status": "Not started"
+    },
+    "PBC-20": {
+      "status": "Not started"
+    },
+    "PBC-21": {
+      "status": "Not started"
+    },
+    "PBC-22": {
+      "status": "Not started"
+    },
+    "PBC-23": {
+      "status": "Insufficient",
+      "reason": "Only Sept 2025 minutes received; remaining monthly meetings through year-end and post-YE still outstanding.",
+      "evidence": [
+        "Board_Minutes_2025-09-18.pdf"
+      ]
+    },
+    "PBC-24": {
+      "status": "Not started"
+    },
+    "PBC-25": {
+      "status": "Not started"
+    },
+    "PBC-26": {
+      "status": "Received",
+      "evidence": [
+        "Going_Concern_Memo_FY26.pdf"
+      ]
+    },
+    "PBC-27": {
+      "status": "Not started"
+    },
+    "PBC-28": {
+      "status": "Not started"
+    },
+    "PBC-29": {
+      "status": "Not started"
+    },
+    "PBC-30": {
+      "status": "Not started"
+    }
+  },
+  "expected_followup_groups": [
+    {
+      "recipient": "jenna.alvarez@northwindbev.example.com",
+      "items": [
+        "PBC-01",
+        "PBC-02",
+        "PBC-03",
+        "PBC-04",
+        "PBC-05",
+        "PBC-06",
+        "PBC-08",
+        "PBC-11",
+        "PBC-23"
+      ],
+      "rationale": "Controller is the primary contact; group all outstanding/insufficient items to one email."
+    },
+    {
+      "recipient": "sam.whitaker@northwindbev.example.com",
+      "items": [
+        "PBC-05"
+      ],
+      "rationale": "Bookkeeper owns bank recs; separate ask for typed formal versions."
+    }
+  ]
+}

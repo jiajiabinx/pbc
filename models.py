@@ -1,0 +1,119 @@
+"""Model routing + cost meter.
+
+The $2/list hard cap drives the routing: the default worker is cheap (Haiku 4.5)
+and escalation to bigger models is an explicit tool the agent calls. Every API
+call's tokens and USD are logged to the trace; the meter warns at 80% of budget
+and raises BudgetExceeded at the cap.
+"""
+from __future__ import annotations
+
+import json
+import sys
+
+import anthropic
+
+# Escalation ladder: agent loop starts on WORKER; the escalate tool moves up.
+WORKER = "claude-haiku-4-5"
+ESCALATION = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"]
+VERIFIER = "claude-sonnet-5"
+VISION = "claude-sonnet-5"
+EXTRACTOR = "claude-haiku-4-5"
+DRAFTER = "claude-haiku-4-5"
+GROUPER = "claude-sonnet-5"
+
+# USD per 1M tokens: (input, output). Cache read = 0.1x input, cache write = 1.25x input.
+# Conservative sticker prices (Sonnet 5 has intro pricing through 2026-08-31; we
+# budget at sticker so the meter never under-counts).
+PRICES = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-5": (3.00, 15.00),
+    "claude-opus-4-8": (5.00, 25.00),
+}
+
+
+class BudgetExceeded(Exception):
+    pass
+
+
+def call_cost(model: str, usage) -> float:
+    inp, out = PRICES[model]
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    return (
+        usage.input_tokens * inp
+        + cache_read * inp * 0.10
+        + cache_write * inp * 1.25
+        + usage.output_tokens * out
+    ) / 1_000_000
+
+
+class Router:
+    """Single entry point for every LLM call: pricing, logging, budget enforcement."""
+
+    def __init__(self, store, budget_usd: float = 2.00):
+        self.client = anthropic.Anthropic()
+        self.store = store
+        self.budget = budget_usd
+        self._warned = False
+
+    def spent(self) -> float:
+        return self.store.total_cost()
+
+    def call(self, model: str, *, purpose: str, episode_id: int | None = None,
+             max_tokens: int = 2048, **kwargs) -> anthropic.types.Message:
+        if self.spent() >= self.budget:
+            raise BudgetExceeded(
+                f"Budget cap ${self.budget:.2f} reached (spent ${self.spent():.4f})")
+        response = self.client.messages.create(model=model, max_tokens=max_tokens, **kwargs)
+        usage = response.usage
+        cost = call_cost(model, usage)
+        self.store.add_api_call(
+            episode_id, model, purpose,
+            usage.input_tokens, usage.output_tokens,
+            getattr(usage, "cache_read_input_tokens", 0) or 0,
+            getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            cost,
+        )
+        total = self.spent()
+        if total >= 0.8 * self.budget and not self._warned:
+            self._warned = True
+            print(f"[cost] WARNING: at {total / self.budget:.0%} of ${self.budget:.2f} budget",
+                  file=sys.stderr)
+        return response
+
+
+def structured_json(router: Router, model: str, *, purpose: str, schema: dict, user: str,
+                    system: str | None = None, episode_id: int | None = None,
+                    max_tokens: int = 2000) -> dict:
+    """Structured-output call that survives token truncation.
+
+    Sonnet 5 runs adaptive thinking by default; thinking counts against
+    max_tokens, so a JSON answer can be truncated mid-string ('Unterminated
+    string'). We disable thinking for these constrained-judgment calls, join
+    every text block (a thinking-only response has none), and retry with a
+    doubled budget on truncation or unparseable JSON.
+    """
+    kwargs: dict = {
+        "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        "messages": [{"role": "user", "content": user}],
+    }
+    if system:
+        kwargs["system"] = system
+    if model.startswith(("claude-sonnet-5", "claude-opus")):
+        kwargs["thinking"] = {"type": "disabled"}
+
+    last_err = "no attempt"
+    for _attempt in range(3):
+        resp = router.call(model, purpose=purpose, episode_id=episode_id,
+                           max_tokens=max_tokens, **kwargs)
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        if resp.stop_reason == "max_tokens" or not text:
+            last_err = f"truncated at {max_tokens} tokens (stop_reason={resp.stop_reason})"
+            max_tokens *= 2
+            continue
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            last_err = f"bad JSON: {e}"
+            max_tokens *= 2
+    raise ValueError(f"structured output failed after 3 attempts ({purpose}): {last_err}")
