@@ -4,8 +4,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
 import sys
 import zipfile
 from datetime import datetime
@@ -35,11 +37,56 @@ def get_store() -> Store:
 store = get_store()
 
 # ------------------------------------------------------------------ auth
+
+
+def _generate_session_token(user_id: int) -> str:
+    """Generate a session token for persistent login."""
+    # Simple token: user_id + random bytes, hashed
+    random_part = secrets.token_hex(16)
+    return f"{user_id}:{random_part}"
+
+
+def _validate_session_token(token: str) -> dict | None:
+    """Validate session token and return user if valid."""
+    if not token or ":" not in token:
+        return None
+    try:
+        user_id_str, _ = token.split(":", 1)
+        user_id = int(user_id_str)
+        # Check token exists in DB and get user
+        stored_token = store.get_meta(f"session:{user_id}")
+        if stored_token == token:
+            return store.get_user(user_id)
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _save_session_token(user_id: int, token: str) -> None:
+    """Save session token to DB."""
+    store.set_meta(f"session:{user_id}", token)
+
+
+def _clear_session_token(user_id: int) -> None:
+    """Clear session token from DB."""
+    store.set_meta(f"session:{user_id}", "")
+
+
 def init_auth_state():
-    """Initialize authentication state."""
+    """Initialize authentication state, checking for persisted session."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
         st.session_state.user = None
+    
+    # If not authenticated in session, check for persisted token in query params
+    if not st.session_state.authenticated:
+        token = st.query_params.get("session")
+        if token:
+            user = _validate_session_token(token)
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.user = user
+                st.session_state.session_token = token
 
 
 def login_form():
@@ -52,6 +99,7 @@ def login_form():
         with st.form("login_form"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
+            remember_me = st.checkbox("Remember me", value=True)
             submitted = st.form_submit_button("Login", type="primary")
             
             if submitted:
@@ -60,6 +108,12 @@ def login_form():
                     if user:
                         st.session_state.authenticated = True
                         st.session_state.user = user
+                        if remember_me:
+                            # Generate and persist session token
+                            token = _generate_session_token(user["user_id"])
+                            _save_session_token(user["user_id"], token)
+                            st.session_state.session_token = token
+                            st.query_params["session"] = token
                         st.rerun()
                     else:
                         st.error("Invalid username or password")
@@ -95,8 +149,14 @@ def login_form():
 
 def logout():
     """Log out the current user."""
+    # Clear persisted session
+    if st.session_state.user:
+        _clear_session_token(st.session_state.user["user_id"])
     st.session_state.authenticated = False
     st.session_state.user = None
+    st.session_state.pop("session_token", None)
+    if "session" in st.query_params:
+        del st.query_params["session"]
     st.rerun()
 
 
@@ -171,6 +231,13 @@ def _rc_request(action: str) -> None:
 
 def _rc_start(fresh: bool) -> None:
     st.session_state.pop("rc_error", None)
+    if fresh:
+        # Clear UI state for expanded items, eval results, etc.
+        keys_to_clear = [k for k in st.session_state.keys() 
+                         if k.startswith(("open_", "rev_", "revnote_", "eval_"))]
+        for k in keys_to_clear:
+            del st.session_state[k]
+        st.session_state.pop("eval_result", None)
     try:
         runctl.start(store, st.session_state.rc_mailbox, st.session_state.rc_pbc,
                      st.session_state.rc_profile, budget=st.session_state.rc_budget,
@@ -242,8 +309,8 @@ def run_control_panel():
     st.metric("Measured LLM cost", f"${total:.4f}")
     st.progress(min(total / budget_cap, 1.0),
                 text=f"{total / budget_cap:.0%} of ${budget_cap:.2f} budget")
-    for c in store.conn.execute(
-            "SELECT model, COUNT(*) n, SUM(cost_usd) c FROM api_calls GROUP BY model"):
+    for c in store.fetchall(
+            "SELECT model, COUNT(*) as n, SUM(cost_usd) as c FROM api_calls GROUP BY model"):
         st.caption(f"{c['model']}: {c['n']} calls, ${c['c']:.4f}")
 
 
@@ -305,9 +372,9 @@ with tab_tracker:
         doc = store.get_document(it["latest_doc_id"]) if it["latest_doc_id"] else None
         email = None
         if it["source_email_id"]:
-            email = store.conn.execute(
+            email = store.fetchone(
                 "SELECT subject, from_addr FROM emails WHERE email_id=?",
-                (it["source_email_id"],)).fetchone()
+                (it["source_email_id"],))
         
         # Get per-reviewer status
         item_reviews = store.get_item_reviews(sel)
@@ -391,8 +458,8 @@ with tab_tracker:
                         marker = "→" if d["doc_id"] == it["latest_doc_id"] else " "
                         st.text(f"{marker} v{d['version']}  {d['filename']}  ({ts(d['registered_at'])})"
                                 + (f"  supersedes doc {d['supersedes']}" if d["supersedes"] else ""))
-                verifs = store.conn.execute(
-                    "SELECT * FROM verifications WHERE item_id=? ORDER BY ts", (sel,)).fetchall()
+                verifs = store.fetchall(
+                    "SELECT * FROM verifications WHERE item_id=? ORDER BY ts", (sel,))
                 if verifs:
                     st.markdown("**Verifier verdicts**")
                     for v in verifs:
@@ -423,12 +490,12 @@ with tab_tracker:
 
 # ------------------------------------------------------------------ trace
 with tab_trace:
-    emails = store.conn.execute(
+    emails = store.fetchall(
         """SELECT m.*,
                   (SELECT COUNT(*) FROM episodes e WHERE e.email_id = m.email_id) AS n_episodes
            FROM emails m
            WHERE EXISTS (SELECT 1 FROM episodes e WHERE e.email_id = m.email_id)
-           ORDER BY m.date""").fetchall()
+           ORDER BY m.date""")
     options = {
         f"{ts(m['date'])} · {m['subject']} — {m['from_addr']}  [{m['email_id']}]"
         + (f" · {m['n_episodes']} episodes" if m["n_episodes"] > 1 else ""): m["email_id"]
@@ -439,11 +506,11 @@ with tab_trace:
     else:
         chosen = st.selectbox("Email", list(options))
         email_id = options[chosen]
-        email_row = store.conn.execute(
-            "SELECT * FROM emails WHERE email_id=?", (email_id,)).fetchone()
-        episodes = store.conn.execute(
+        email_row = store.fetchone(
+            "SELECT * FROM emails WHERE email_id=?", (email_id,))
+        episodes = store.fetchall(
             "SELECT * FROM episodes WHERE email_id=? ORDER BY episode_id",
-            (email_id,)).fetchall()
+            (email_id,))
 
         st.markdown(f"**email_id:** `{email_id}`")
         if len(episodes) > 1:
@@ -464,14 +531,15 @@ with tab_trace:
                         f"Subject:  {email_row['subject']}")
                 st.code(email_row["body"] or "(empty body)", language=None)
                 # older DBs (pre-migration) may lack the attachments column
+                row_keys = email_row.keys() if hasattr(email_row, 'keys') else list(email_row.keys()) if isinstance(email_row, dict) else []
                 atts = (json.loads(email_row["attachments"] or "[]")
-                        if "attachments" in email_row.keys() else [])
+                        if "attachments" in row_keys else [])
                 if atts:
                     st.markdown("**📎 Attachments as received**")
                     for a in atts:
-                        reg = store.conn.execute(
+                        reg = store.fetchone(
                             "SELECT doc_id, version FROM documents WHERE sha256=?",
-                            (a["sha256"],)).fetchone()
+                            (a["sha256"],))
                         line = f"{a['filename']} ({a['size']:,} bytes, sha {a['sha256'][:12]}…)"
                         line += (f" — registered as doc {reg['doc_id']} v{reg['version']}"
                                  if reg else " — ⚠️ never registered by the agent")
@@ -491,13 +559,13 @@ with tab_trace:
             ep_ids = [ep["episode_id"] for ep in episodes]
             placeholders = ",".join("?" * len(ep_ids))
             st.markdown("**🏷️ Items labeled for this email**")
-            updates = [json.loads(t["payload"]) for t in store.conn.execute(
+            updates = [json.loads(t["payload"]) for t in store.fetchall(
                 f"SELECT payload FROM trace WHERE episode_id IN ({placeholders}) "
                 "AND kind='tool_call' AND name='update_item_status' ORDER BY seq",
-                ep_ids)]
-            verifs_ep = {v["item_id"]: v for v in store.conn.execute(
+                tuple(ep_ids))]
+            verifs_ep = {v["item_id"]: v for v in store.fetchall(
                 f"SELECT * FROM verifications WHERE episode_id IN ({placeholders})",
-                ep_ids)}
+                tuple(ep_ids))}
             if not updates and not verifs_ep:
                 st.caption("(no tracker changes for this email)")
             for u in updates:
@@ -522,9 +590,9 @@ with tab_trace:
         # ---- one section per episode (escalations show as chained runs)
         for ep in episodes:
             eid = ep["episode_id"]
-            cost = store.conn.execute(
-                "SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM api_calls WHERE episode_id=?",
-                (eid,)).fetchone()
+            cost = store.fetchone(
+                "SELECT COALESCE(SUM(cost_usd),0) as c, COUNT(*) as n FROM api_calls WHERE episode_id=?",
+                (eid,))
             header = (f"Episode #{eid} · {ep['model']} · "
                       f"{cost['n']} API calls · ${cost['c']:.4f}")
             if ep["escalated_from"]:
@@ -534,7 +602,7 @@ with tab_trace:
                     st.success(f"Outcome: {ep['summary']}")
 
                 st.markdown("**🧵 Step-by-step trace**")
-                for t in store.conn.execute(
+                for t in store.fetchall(
                         "SELECT * FROM trace WHERE episode_id=? ORDER BY seq", (eid,)):
                     payload = t["payload"]
                     try:
@@ -615,15 +683,16 @@ with tab_trace:
                         st.caption(f"💬 {payload}")
 
                 with st.expander("Per-call cost detail"):
-                    df = pd.read_sql_query(
+                    cost_rows = store.fetchall(
                         "SELECT model, purpose, input_tokens, output_tokens, cache_read_tokens,"
                         " cache_write_tokens, cost_usd FROM api_calls WHERE episode_id=?",
-                        store.conn, params=(eid,))
+                        (eid,))
+                    df = pd.DataFrame(cost_rows)
                     st.dataframe(df, width="stretch", hide_index=True)
 
 # ------------------------------------------------------------------ drafts
 with tab_drafts:
-    drafts = store.conn.execute("SELECT * FROM drafts ORDER BY id").fetchall()
+    drafts = store.fetchall("SELECT * FROM drafts ORDER BY id")
     if not drafts:
         st.info("No drafts yet.")
     for d in drafts:
@@ -639,20 +708,36 @@ with tab_drafts:
             if c1.button("✅ Approve & send (mocked)", key=f"ap{d['id']}",
                          disabled=status == "sent"):
                 edited = new_subject != d["subject"] or new_body != d["body"]
-                store.conn.execute(
-                    "UPDATE drafts SET subject=?, body=?, status='sent' WHERE id=?",
-                    (new_subject, new_body, d["id"]))
+                if store._is_postgres:
+                    with store.conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE drafts SET subject=%s, body=%s, status='sent' WHERE id=%s",
+                            (new_subject, new_body, d["id"]))
+                else:
+                    store.conn.execute(
+                        "UPDATE drafts SET subject=?, body=?, status='sent' WHERE id=?",
+                        (new_subject, new_body, d["id"]))
                 store.conn.commit()
                 st.toast(f"Mock-sent to {d['recipient']}" + (" (with edits)" if edited else ""))
                 st.rerun()
             if c2.button("💾 Save edits", key=f"ed{d['id']}"):
-                store.conn.execute(
-                    "UPDATE drafts SET subject=?, body=?, status='edited' WHERE id=?",
-                    (new_subject, new_body, d["id"]))
+                if store._is_postgres:
+                    with store.conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE drafts SET subject=%s, body=%s, status='edited' WHERE id=%s",
+                            (new_subject, new_body, d["id"]))
+                else:
+                    store.conn.execute(
+                        "UPDATE drafts SET subject=?, body=?, status='edited' WHERE id=?",
+                        (new_subject, new_body, d["id"]))
                 store.conn.commit()
                 st.rerun()
             if c3.button("⛔ Reject", key=f"rj{d['id']}"):
-                store.conn.execute("UPDATE drafts SET status='rejected' WHERE id=?", (d["id"],))
+                if store._is_postgres:
+                    with store.conn.cursor() as cur:
+                        cur.execute("UPDATE drafts SET status='rejected' WHERE id=%s", (d["id"],))
+                else:
+                    store.conn.execute("UPDATE drafts SET status='rejected' WHERE id=?", (d["id"],))
                 store.conn.commit()
                 st.rerun()
 
@@ -1003,9 +1088,9 @@ with tab_evals:
 
                 # source email + evidence, so a miss can be judged without
                 # leaving the eval page
-                em = store.conn.execute(
+                em = store.fetchone(
                     "SELECT body, attachments FROM emails WHERE email_id=?",
-                    (row.get("email_id"),)).fetchone()
+                    (row.get("email_id"),))
                 if em:
                     st.markdown("**Source email**")
                     st.text((em["body"] or "").strip()[:4000])

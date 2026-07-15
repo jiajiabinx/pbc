@@ -99,8 +99,11 @@ def main() -> int:
         print(f"Embeddings backend: {matcher.backend}")
 
         emails = ingest.load_mailbox(args.mailbox)
-        already = {r["email_id"] for r in store.conn.execute(
-            "SELECT email_id FROM emails WHERE processed_at IS NOT NULL")}
+        # Filter out emails that already have a completed episode (not just inserted into emails table)
+        # This prevents duplicates when pausing/resuming runs
+        already = {r["email_id"] for r in store.fetchall(
+            """SELECT DISTINCT email_id FROM episodes 
+               WHERE ended_at IS NOT NULL AND summary NOT LIKE 'escalated:%'""")}
         todo = [e for e in emails if e.email_id not in already]
         print(f"Mailbox: {len(emails)} emails ({len(todo)} unprocessed)")
 

@@ -4,6 +4,8 @@ openpyxl>=3.1
 streamlit[pdf]>=1.38
 pandas>=2.0
 pytest>=8.0
+# PostgreSQL support (for Railway/production deployments)
+psycopg2-binary>=2.9
 # Local embeddings for candidate matching ($0, offline). Heavy (pulls torch);
 # the code falls back to a deterministic hashed-ngram matcher if absent.
 sentence-transformers>=3.0

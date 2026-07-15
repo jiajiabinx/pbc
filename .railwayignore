@@ -1,0 +1,17 @@
+# Railway ignore file
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.DS_Store
+data/*.db
+*.log
+.env
+.env.local
+.claude
+.agents
+tests/
+PLAN.md
