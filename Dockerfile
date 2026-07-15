@@ -29,10 +29,5 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT}/_stcore/health || exit 1
 
-# Run Streamlit
-CMD streamlit run ui.py \
-    --server.port=${PORT} \
-    --server.address=0.0.0.0 \
-    --server.headless=true \
-    --browser.gatherUsageStats=false \
-    --server.fileWatcherType=none
+# Run Streamlit (JSON form with shell for variable expansion)
+CMD ["sh", "-c", "streamlit run ui.py --server.port=${PORT} --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.fileWatcherType=none"]

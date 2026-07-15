@@ -287,11 +287,10 @@ def run_control_panel():
             st.number_input("budget $", value=float(prev.get("budget", 2.0)),
                             min_value=0.1, step=0.5, key="rc_budget")
             st.text_input(
-                "Anthropic API key", key="rc_api_key", type="password",
-                placeholder=("using ANTHROPIC_API_KEY from the environment"
-                             if os.environ.get("ANTHROPIC_API_KEY")
-                             or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-                             else "sk-ant-…"),
+                "OpenRouter API key", key="rc_api_key", type="password",
+                placeholder=("using OPENROUTER_API_KEY from the environment"
+                             if os.environ.get("OPENROUTER_API_KEY")
+                             else "sk-or-…"),
                 help="Passed to the runner's environment only — never stored. "
                      "Leave empty to use the key Streamlit was launched with.")
         c1, c2 = st.columns(2)
@@ -310,7 +309,7 @@ def run_control_panel():
     st.progress(min(total / budget_cap, 1.0),
                 text=f"{total / budget_cap:.0%} of ${budget_cap:.2f} budget")
     for c in store.fetchall(
-            "SELECT model, COUNT(*) as n, SUM(cost_usd) as c FROM api_calls GROUP BY model"):
+            "SELECT model, COUNT(*) as n, SUM(cost_usd) as c FROM pbc_api_calls GROUP BY model"):
         st.caption(f"{c['model']}: {c['n']} calls, ${c['c']:.4f}")
 
 
@@ -373,7 +372,7 @@ with tab_tracker:
         email = None
         if it["source_email_id"]:
             email = store.fetchone(
-                "SELECT subject, from_addr FROM emails WHERE email_id=?",
+                "SELECT subject, from_addr FROM pbc_emails WHERE email_id=?",
                 (it["source_email_id"],))
         
         # Get per-reviewer status
@@ -459,7 +458,7 @@ with tab_tracker:
                         st.text(f"{marker} v{d['version']}  {d['filename']}  ({ts(d['registered_at'])})"
                                 + (f"  supersedes doc {d['supersedes']}" if d["supersedes"] else ""))
                 verifs = store.fetchall(
-                    "SELECT * FROM verifications WHERE item_id=? ORDER BY ts", (sel,))
+                    "SELECT * FROM pbc_verifications WHERE item_id=? ORDER BY ts", (sel,))
                 if verifs:
                     st.markdown("**Verifier verdicts**")
                     for v in verifs:
@@ -492,9 +491,9 @@ with tab_tracker:
 with tab_trace:
     emails = store.fetchall(
         """SELECT m.*,
-                  (SELECT COUNT(*) FROM episodes e WHERE e.email_id = m.email_id) AS n_episodes
-           FROM emails m
-           WHERE EXISTS (SELECT 1 FROM episodes e WHERE e.email_id = m.email_id)
+                  (SELECT COUNT(*) FROM pbc_episodes e WHERE e.email_id = m.email_id) AS n_episodes
+           FROM pbc_emails m
+           WHERE EXISTS (SELECT 1 FROM pbc_episodes e WHERE e.email_id = m.email_id)
            ORDER BY m.date""")
     options = {
         f"{ts(m['date'])} · {m['subject']} — {m['from_addr']}  [{m['email_id']}]"
@@ -507,9 +506,9 @@ with tab_trace:
         chosen = st.selectbox("Email", list(options))
         email_id = options[chosen]
         email_row = store.fetchone(
-            "SELECT * FROM emails WHERE email_id=?", (email_id,))
+            "SELECT * FROM pbc_emails WHERE email_id=?", (email_id,))
         episodes = store.fetchall(
-            "SELECT * FROM episodes WHERE email_id=? ORDER BY episode_id",
+            "SELECT * FROM pbc_episodes WHERE email_id=? ORDER BY episode_id",
             (email_id,))
 
         st.markdown(f"**email_id:** `{email_id}`")
@@ -538,7 +537,7 @@ with tab_trace:
                     st.markdown("**📎 Attachments as received**")
                     for a in atts:
                         reg = store.fetchone(
-                            "SELECT doc_id, version FROM documents WHERE sha256=?",
+                            "SELECT doc_id, version FROM pbc_documents WHERE sha256=?",
                             (a["sha256"],))
                         line = f"{a['filename']} ({a['size']:,} bytes, sha {a['sha256'][:12]}…)"
                         line += (f" — registered as doc {reg['doc_id']} v{reg['version']}"
@@ -560,11 +559,11 @@ with tab_trace:
             placeholders = ",".join("?" * len(ep_ids))
             st.markdown("**🏷️ Items labeled for this email**")
             updates = [json.loads(t["payload"]) for t in store.fetchall(
-                f"SELECT payload FROM trace WHERE episode_id IN ({placeholders}) "
+                f"SELECT payload FROM pbc_trace WHERE episode_id IN ({placeholders}) "
                 "AND kind='tool_call' AND name='update_item_status' ORDER BY seq",
                 tuple(ep_ids))]
             verifs_ep = {v["item_id"]: v for v in store.fetchall(
-                f"SELECT * FROM verifications WHERE episode_id IN ({placeholders})",
+                f"SELECT * FROM pbc_verifications WHERE episode_id IN ({placeholders})",
                 tuple(ep_ids))}
             if not updates and not verifs_ep:
                 st.caption("(no tracker changes for this email)")
@@ -591,7 +590,7 @@ with tab_trace:
         for ep in episodes:
             eid = ep["episode_id"]
             cost = store.fetchone(
-                "SELECT COALESCE(SUM(cost_usd),0) as c, COUNT(*) as n FROM api_calls WHERE episode_id=?",
+                "SELECT COALESCE(SUM(cost_usd),0) as c, COUNT(*) as n FROM pbc_api_calls WHERE episode_id=?",
                 (eid,))
             header = (f"Episode #{eid} · {ep['model']} · "
                       f"{cost['n']} API calls · ${cost['c']:.4f}")
@@ -603,7 +602,7 @@ with tab_trace:
 
                 st.markdown("**🧵 Step-by-step trace**")
                 for t in store.fetchall(
-                        "SELECT * FROM trace WHERE episode_id=? ORDER BY seq", (eid,)):
+                        "SELECT * FROM pbc_trace WHERE episode_id=? ORDER BY seq", (eid,)):
                     payload = t["payload"]
                     try:
                         payload = json.loads(payload)
@@ -685,14 +684,14 @@ with tab_trace:
                 with st.expander("Per-call cost detail"):
                     cost_rows = store.fetchall(
                         "SELECT model, purpose, input_tokens, output_tokens, cache_read_tokens,"
-                        " cache_write_tokens, cost_usd FROM api_calls WHERE episode_id=?",
+                        " cache_write_tokens, cost_usd FROM pbc_api_calls WHERE episode_id=?",
                         (eid,))
                     df = pd.DataFrame(cost_rows)
                     st.dataframe(df, width="stretch", hide_index=True)
 
 # ------------------------------------------------------------------ drafts
 with tab_drafts:
-    drafts = store.fetchall("SELECT * FROM drafts ORDER BY id")
+    drafts = store.fetchall("SELECT * FROM pbc_drafts ORDER BY id")
     if not drafts:
         st.info("No drafts yet.")
     for d in drafts:
@@ -711,11 +710,11 @@ with tab_drafts:
                 if store._is_postgres:
                     with store.conn.cursor() as cur:
                         cur.execute(
-                            "UPDATE drafts SET subject=%s, body=%s, status='sent' WHERE id=%s",
+                            "UPDATE pbc_drafts SET subject=%s, body=%s, status='sent' WHERE id=%s",
                             (new_subject, new_body, d["id"]))
                 else:
                     store.conn.execute(
-                        "UPDATE drafts SET subject=?, body=?, status='sent' WHERE id=?",
+                        "UPDATE pbc_drafts SET subject=?, body=?, status='sent' WHERE id=?",
                         (new_subject, new_body, d["id"]))
                 store.conn.commit()
                 st.toast(f"Mock-sent to {d['recipient']}" + (" (with edits)" if edited else ""))
@@ -724,20 +723,20 @@ with tab_drafts:
                 if store._is_postgres:
                     with store.conn.cursor() as cur:
                         cur.execute(
-                            "UPDATE drafts SET subject=%s, body=%s, status='edited' WHERE id=%s",
+                            "UPDATE pbc_drafts SET subject=%s, body=%s, status='edited' WHERE id=%s",
                             (new_subject, new_body, d["id"]))
                 else:
                     store.conn.execute(
-                        "UPDATE drafts SET subject=?, body=?, status='edited' WHERE id=?",
+                        "UPDATE pbc_drafts SET subject=?, body=?, status='edited' WHERE id=?",
                         (new_subject, new_body, d["id"]))
                 store.conn.commit()
                 st.rerun()
             if c3.button("⛔ Reject", key=f"rj{d['id']}"):
                 if store._is_postgres:
                     with store.conn.cursor() as cur:
-                        cur.execute("UPDATE drafts SET status='rejected' WHERE id=%s", (d["id"],))
+                        cur.execute("UPDATE pbc_drafts SET status='rejected' WHERE id=%s", (d["id"],))
                 else:
-                    store.conn.execute("UPDATE drafts SET status='rejected' WHERE id=?", (d["id"],))
+                    store.conn.execute("UPDATE pbc_drafts SET status='rejected' WHERE id=?", (d["id"],))
                 store.conn.commit()
                 st.rerun()
 
@@ -1089,7 +1088,7 @@ with tab_evals:
                 # source email + evidence, so a miss can be judged without
                 # leaving the eval page
                 em = store.fetchone(
-                    "SELECT body, attachments FROM emails WHERE email_id=?",
+                    "SELECT body, attachments FROM pbc_emails WHERE email_id=?",
                     (row.get("email_id"),))
                 if em:
                     st.markdown("**Source email**")
