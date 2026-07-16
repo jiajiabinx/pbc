@@ -35,7 +35,8 @@ def _proc_state(pid: int) -> str | None:
         # contain spaces, so take the char after the last ')'.
         with open(f"/proc/{pid}/stat") as f:
             body = f.read()
-        return body.rsplit(")", 1)[-1].split()[0]
+        parts = body.rsplit(")", 1)[-1].split()
+        return parts[0] if parts else None
     except FileNotFoundError:
         pass
     except OSError:
@@ -46,35 +47,50 @@ def _proc_state(pid: int) -> str | None:
             capture_output=True, text=True, check=False,
         ).stdout.strip()
         return out[0] if out else None
-    except FileNotFoundError:
-        # No /proc and no ps (rare) — caller already confirmed kill(0) worked.
+    except OSError:
+        # No /proc and no ps (slim image) — caller already confirmed kill(0).
         return "?"
 
 
 def _pid_alive(pid: str | None) -> bool:
+    """Never raise — a probe failure must not take down the Streamlit UI."""
     if not pid:
         return False
     try:
         pid = int(pid)
-    except ValueError:
+    except (TypeError, ValueError):
         return False
     try:
         # The runner is our child: if it exited, reap it here. A dead child we
         # never wait() on is a zombie, and the os.kill probe below reports
         # zombies as alive — leaving the UI stuck on "launching" forever.
-        if os.waitpid(pid, os.WNOHANG) != (0, 0):
+        try:
+            if os.waitpid(pid, os.WNOHANG) != (0, 0):
+                return False
+        except ChildProcessError:
+            pass  # not our child (the UI restarted since the run began)
+        try:
+            os.kill(pid, 0)
+        except OSError:
             return False
-    except ChildProcessError:
-        pass  # not our child (the UI restarted since the run began)
-    try:
-        os.kill(pid, 0)
-    except OSError:
+        # os.kill(pid, 0) also succeeds for zombies we can't reap (the runner was
+        # spawned by a previous UI process that still exists) — check the process
+        # state instead of trusting the signal probe.
+        state = _proc_state(pid)
+        return state is not None and not state.startswith("Z")
+    except Exception:
         return False
-    # os.kill(pid, 0) also succeeds for zombies we can't reap (the runner was
-    # spawned by a previous UI process that still exists) — check the process
-    # state instead of trusting the signal probe.
-    state = _proc_state(pid)
-    return state is not None and not state.startswith("Z")
+
+
+def _meta_json(store, key: str, default):
+    raw = store.get_meta(key)
+    if not raw:
+        return default
+    try:
+        val = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return default
+    return val if val is not None else default
 
 
 def state(store) -> dict:
@@ -82,11 +98,17 @@ def state(store) -> dict:
     alive = _pid_alive(store.get_meta("run_pid"))
     if status in ("launching", "running", "paused", "drafting") and not alive:
         status = "crashed"
+    progress = _meta_json(store, "run_progress", {})
+    args = _meta_json(store, "run_args", {})
+    if not isinstance(progress, dict):
+        progress = {}
+    if not isinstance(args, dict):
+        args = {}
     return {
         "status": status,
         "alive": alive,
-        "progress": json.loads(store.get_meta("run_progress") or "{}"),
-        "args": json.loads(store.get_meta("run_args") or "null"),
+        "progress": progress,
+        "args": args,
         "error": store.get_meta("run_error"),
     }
 
@@ -171,10 +193,10 @@ def bench_state(store) -> dict:
     return {
         "status": status,
         "alive": alive,
-        "progress": json.loads(store.get_meta("bench_progress") or "{}"),
-        "run": run,
-        "results": json.loads(store.get_meta("bench_results") or "[]"),
-        "summary": json.loads(store.get_meta("bench_summary") or "{}"),
+        "progress": _meta_json(store, "bench_progress", {}),
+        "run": run if isinstance(run, dict) else {},
+        "results": _meta_json(store, "bench_results", []),
+        "summary": _meta_json(store, "bench_summary", {}),
         "error": store.get_meta("bench_error"),
     }
 

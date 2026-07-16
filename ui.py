@@ -254,7 +254,7 @@ def run_control_panel():
                 text=f"{total / budget_cap:.0%} of ${budget_cap:.2f} budget")
     for c in store.conn.execute(
             "SELECT model, COUNT(*) n, SUM(cost_usd) c FROM api_calls GROUP BY model"):
-        st.caption(f"{c['model']}: {c['n']} calls, ${c['c']:.4f}")
+        st.caption(f"{c['model']}: {c['n']} calls, ${float(c['c'] or 0):.4f}")
 
 
 st.sidebar.title("PBC Email Agent")
@@ -534,9 +534,9 @@ with tab_trace:
             eid = ep["episode_id"]
             cost = store.conn.execute(
                 "SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM api_calls WHERE episode_id=?",
-                (eid,)).fetchone()
+                (eid,)).fetchone() or {"c": 0, "n": 0}
             header = (f"Episode #{eid} · {ep['model']} · "
-                      f"{cost['n']} API calls · ${cost['c']:.4f}")
+                      f"{cost['n']} API calls · ${float(cost['c'] or 0):.4f}")
             if ep["escalated_from"]:
                 header += f" · escalated from #{ep['escalated_from']}"
             with st.expander(header, expanded=(ep["episode_id"] == episodes[-1]["episode_id"])):
@@ -680,12 +680,17 @@ with tab_history:
                 "click '🔁 Restart fresh' in the sidebar.")
     else:
         # Run selector
-        run_options = {
-            f"Run #{r['run_id']} — {ts(r['started_at'])} — {r['status']} — "
-            f"{json.loads(r['summary'] or '{}').get('total_emails', '?')} emails, "
-            f"${json.loads(r['summary'] or '{}').get('total_cost_usd', 0):.4f}": r["run_id"]
-            for r in history
-        }
+        def _hist_label(r) -> str:
+            summary = {}
+            try:
+                summary = json.loads(r["summary"] or "{}") or {}
+            except (TypeError, json.JSONDecodeError):
+                pass
+            emails = summary.get("total_emails", "?")
+            cost = summary.get("total_cost_usd") or 0
+            return (f"Run #{r['run_id']} — {ts(r['started_at'])} — {r['status']} — "
+                    f"{emails} emails, ${float(cost):.4f}")
+        run_options = {_hist_label(r): r["run_id"] for r in history}
         selected_label = st.selectbox("Select archived run", list(run_options.keys()))
         selected_run_id = run_options[selected_label]
         

@@ -13,6 +13,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# procps provides `ps` (used as a fallback when probing runner liveness).
+RUN apt-get update && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies first for better layer caching.
 COPY requirements-prod.txt .
 RUN pip install -r requirements-prod.txt

@@ -85,7 +85,9 @@ class _PgRow(dict):
         self._seq = tuple(values)
 
     def __getitem__(self, key):
-        if isinstance(key, int):
+        # type(key) is int — not isinstance — so bool (a subclass of int) stays
+        # a normal dict key lookup and can't raise "tuple index out of range".
+        if type(key) is int:
             return self._seq[key]
         return super().__getitem__(key)
 
