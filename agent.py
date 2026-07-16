@@ -101,17 +101,6 @@ BODY:
 Process this email. Start with submit_plan."""
 
 
-class StopRequested(Exception):
-    """Raised when user requests stop mid-episode."""
-    pass
-
-
-def _check_stop(store: Store) -> None:
-    """Check if stop was requested; raise StopRequested if so."""
-    if (store.get_meta("run_control") or "run") == "stop":
-        raise StopRequested()
-
-
 def run_episode(store: Store, router: models.Router, matcher, profile_text: str,
                 system: str, email, *, model: str = models.WORKER,
                 escalated_from: int | None = None) -> dict:
@@ -129,8 +118,6 @@ def run_episode(store: Store, router: models.Router, matcher, profile_text: str,
     summary, outcome = "", "completed"
 
     for _turn in range(MAX_TURNS):
-        # Check for stop request at the start of each turn
-        _check_stop(store)
         response = router.call(
             model, purpose="agent-loop", episode_id=episode_id, max_tokens=2000,
             system=system_blocks, messages=messages,
@@ -151,8 +138,6 @@ def run_episode(store: Store, router: models.Router, matcher, profile_text: str,
         results = []
         finished = escalation = None
         for tu in tool_uses:
-            # Check for stop before each tool call (tools like verify_item can be slow)
-            _check_stop(store)
             if tu.name != "submit_plan":  # submit_plan traces itself as the 'plan' entry
                 store.add_trace(episode_id, "tool_call", tu.name, tu.input)
             try:
@@ -214,11 +199,6 @@ def run_mailbox(store: Store, router: models.Router, matcher, profile_text: str,
         except models.BudgetExceeded as e:
             print(f"  !! {e}")
             results.append({"email_id": email.email_id, "outcome": "budget_exceeded"})
-            break
-        except StopRequested:
-            print("  !! Stop requested mid-episode")
-            store.set_meta("run_status", "stopped")
-            results.append({"email_id": email.email_id, "outcome": "stopped"})
             break
         print(f"  -> {res['model']} | {res['outcome']} | {res['summary']}"
               f" | total ${router.spent():.4f}")

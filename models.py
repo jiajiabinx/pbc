@@ -15,7 +15,7 @@ import anthropic
 # Escalation ladder: agent loop starts on WORKER; the escalate tool moves up.
 WORKER = "claude-haiku-4-5"
 ESCALATION = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"]
-VERIFIER = "claude-sonnet-5"
+VERIFIER = "claude-opus-4-8"
 VISION = "claude-sonnet-5"
 EXTRACTOR = "claude-haiku-4-5"
 DRAFTER = "claude-haiku-4-5"
@@ -84,7 +84,7 @@ class Router:
 
 def structured_json(router: Router, model: str, *, purpose: str, schema: dict, user: str,
                     system: str | None = None, episode_id: int | None = None,
-                    max_tokens: int = 2000, enable_thinking: bool = False) -> dict:
+                    max_tokens: int = 2000) -> dict:
     """Structured-output call that survives token truncation.
 
     Sonnet 5 runs adaptive thinking by default; thinking counts against
@@ -94,9 +94,6 @@ def structured_json(router: Router, model: str, *, purpose: str, schema: dict, u
     doubled budget + brevity reminder on truncation or unparseable JSON.
     Retries are written to the episode trace as kind='token_retry' so the UI
     can show hit-limit → 2× budget explicitly.
-    
-    Set enable_thinking=True for critical judgment calls (e.g., verification)
-    where extended reasoning improves accuracy.
     """
     base_user = user
     kwargs: dict = {
@@ -105,11 +102,7 @@ def structured_json(router: Router, model: str, *, purpose: str, schema: dict, u
     if system:
         kwargs["system"] = system
     if model.startswith(("claude-sonnet-5", "claude-opus")):
-        if enable_thinking:
-            # Enable extended thinking for critical judgment calls
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10000}
-        else:
-            kwargs["thinking"] = {"type": "disabled"}
+        kwargs["thinking"] = {"type": "disabled"}
 
     def _trace(payload: dict) -> None:
         store = getattr(router, "store", None)

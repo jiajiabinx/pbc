@@ -1,7 +1,4 @@
-"""Database persistence: tracker rows, document lineage, full agent traces, cost ledger.
-
-Supports both SQLite (local development) and PostgreSQL (production/Railway).
-Set DATABASE_URL env var for PostgreSQL, otherwise falls back to SQLite.
+"""SQLite persistence: tracker rows, document lineage, full agent traces, cost ledger.
 
 The status guard lives here, in code, not in a prompt: no item may move to
 Received / Insufficient / Complete without a verifier verdict recorded for that
@@ -10,7 +7,7 @@ Received / Insufficient / Complete without a verifier verdict recorded for that
 from __future__ import annotations
 
 import json
-import os
+import sqlite3
 import time
 from typing import Any, Optional
 
@@ -18,8 +15,7 @@ STATUSES = ("Not started", "Requested", "Under review", "Received", "Insufficien
 # Statuses that require an independent verifier verdict on file.
 GUARDED_STATUSES = {"Received", "Insufficient", "Complete"}
 
-# PostgreSQL schema (uses SERIAL instead of AUTOINCREMENT, TEXT for all strings)
-_SCHEMA_PG = """
+_SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
     item_id TEXT PRIMARY KEY,
     category TEXT, priority TEXT, description TEXT,
@@ -27,101 +23,7 @@ CREATE TABLE IF NOT EXISTS items (
     status TEXT DEFAULT 'Not started',
     confidence REAL, rationale TEXT,
     latest_doc_id INTEGER, source_email_id TEXT,
-    human_review TEXT DEFAULT 'Unreviewed',
-    human_note TEXT, reviewed_at DOUBLE PRECISION,
-    updated_at DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS documents (
-    doc_id SERIAL PRIMARY KEY,
-    filename TEXT, path TEXT, sha256 TEXT,
-    email_id TEXT, semantic_key TEXT,
-    version INTEGER, supersedes INTEGER,
-    parent_doc_id INTEGER,
-    registered_at DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS episodes (
-    episode_id SERIAL PRIMARY KEY,
-    email_id TEXT, model TEXT, escalated_from INTEGER,
-    started_at DOUBLE PRECISION, ended_at DOUBLE PRECISION, summary TEXT
-);
-CREATE TABLE IF NOT EXISTS trace (
-    id SERIAL PRIMARY KEY,
-    episode_id INTEGER, seq INTEGER,
-    kind TEXT,
-    name TEXT, payload TEXT, ts DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS verifications (
-    id SERIAL PRIMARY KEY,
-    item_id TEXT, doc_id INTEGER, verdict TEXT,
-    rationale TEXT, criteria TEXT, confidence REAL,
-    episode_id INTEGER, ts DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS clarifications (
-    id SERIAL PRIMARY KEY,
-    item_id TEXT, question TEXT, recipient TEXT,
-    email_id TEXT, episode_id INTEGER, status TEXT DEFAULT 'open', ts DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS drafts (
-    id SERIAL PRIMARY KEY,
-    recipient TEXT, subject TEXT, body TEXT,
-    item_ids TEXT, status TEXT DEFAULT 'pending',
-    created_at DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS api_calls (
-    id SERIAL PRIMARY KEY,
-    episode_id INTEGER, model TEXT, purpose TEXT,
-    input_tokens INTEGER, output_tokens INTEGER,
-    cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-    cost_usd REAL, ts DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS emails (
-    email_id TEXT PRIMARY KEY,
-    thread_id TEXT, from_addr TEXT, from_name TEXT,
-    to_addrs TEXT, subject TEXT, date DOUBLE PRECISION, body TEXT,
-    attachments TEXT,
-    processed_at DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS users (
-    user_id SERIAL PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    display_name TEXT,
-    role TEXT DEFAULT 'reviewer',
-    created_at DOUBLE PRECISION
-);
-CREATE TABLE IF NOT EXISTS item_reviews (
-    id SERIAL PRIMARY KEY,
-    item_id TEXT NOT NULL,
-    user_id INTEGER NOT NULL,
-    review TEXT NOT NULL,
-    note TEXT,
-    reviewed_at DOUBLE PRECISION,
-    UNIQUE(item_id, user_id)
-);
-CREATE TABLE IF NOT EXISTS run_history (
-    run_id SERIAL PRIMARY KEY,
-    started_at DOUBLE PRECISION,
-    ended_at DOUBLE PRECISION,
-    status TEXT,
-    summary TEXT,
-    items_snapshot TEXT,
-    episodes_snapshot TEXT,
-    drafts_snapshot TEXT,
-    api_calls_snapshot TEXT
-);
-"""
-
-# SQLite schema (original)
-_SCHEMA_SQLITE = """
-CREATE TABLE IF NOT EXISTS items (
-    item_id TEXT PRIMARY KEY,
-    category TEXT, priority TEXT, description TEXT,
-    acceptance TEXT, expected_docs TEXT,
-    status TEXT DEFAULT 'Not started',
-    confidence REAL, rationale TEXT,
-    latest_doc_id INTEGER, source_email_id TEXT,
-    human_review TEXT DEFAULT 'Unreviewed',
+    human_review TEXT DEFAULT 'Unreviewed',   -- Unreviewed | Approved | Rejected
     human_note TEXT, reviewed_at REAL,
     updated_at REAL
 );
@@ -130,7 +32,7 @@ CREATE TABLE IF NOT EXISTS documents (
     filename TEXT, path TEXT, sha256 TEXT,
     email_id TEXT, semantic_key TEXT,
     version INTEGER, supersedes INTEGER,
-    parent_doc_id INTEGER,
+    parent_doc_id INTEGER,          -- set for files extracted from a zip
     registered_at REAL
 );
 CREATE TABLE IF NOT EXISTS episodes (
@@ -141,7 +43,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE TABLE IF NOT EXISTS trace (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     episode_id INTEGER, seq INTEGER,
-    kind TEXT,
+    kind TEXT,           -- plan | tool_call | tool_result | text | verdict | escalation | token_retry | error
     name TEXT, payload TEXT, ts REAL
 );
 CREATE TABLE IF NOT EXISTS verifications (
@@ -158,7 +60,7 @@ CREATE TABLE IF NOT EXISTS clarifications (
 CREATE TABLE IF NOT EXISTS drafts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recipient TEXT, subject TEXT, body TEXT,
-    item_ids TEXT, status TEXT DEFAULT 'pending',
+    item_ids TEXT, status TEXT DEFAULT 'pending',   -- pending | approved | edited | rejected | sent
     created_at REAL
 );
 CREATE TABLE IF NOT EXISTS api_calls (
@@ -172,7 +74,7 @@ CREATE TABLE IF NOT EXISTS emails (
     email_id TEXT PRIMARY KEY,
     thread_id TEXT, from_addr TEXT, from_name TEXT,
     to_addrs TEXT, subject TEXT, date REAL, body TEXT,
-    attachments TEXT,
+    attachments TEXT,    -- JSON [{filename, path, sha256, size}] as received
     processed_at REAL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -181,14 +83,14 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     display_name TEXT,
-    role TEXT DEFAULT 'reviewer',
+    role TEXT DEFAULT 'reviewer',  -- reviewer | lead | admin
     created_at REAL
 );
 CREATE TABLE IF NOT EXISTS item_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id TEXT NOT NULL,
     user_id INTEGER NOT NULL,
-    review TEXT NOT NULL,
+    review TEXT NOT NULL,           -- Unreviewed | Approved | Rejected
     note TEXT,
     reviewed_at REAL,
     UNIQUE(item_id, user_id)
@@ -197,12 +99,12 @@ CREATE TABLE IF NOT EXISTS run_history (
     run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at REAL,
     ended_at REAL,
-    status TEXT,
-    summary TEXT,
-    items_snapshot TEXT,
-    episodes_snapshot TEXT,
-    drafts_snapshot TEXT,
-    api_calls_snapshot TEXT
+    status TEXT,           -- finished | stopped | budget_exceeded | error
+    summary TEXT,          -- JSON {total_emails, total_cost, etc}
+    items_snapshot TEXT,   -- JSON snapshot of items table
+    episodes_snapshot TEXT,-- JSON snapshot of episodes + trace
+    drafts_snapshot TEXT,  -- JSON snapshot of drafts
+    api_calls_snapshot TEXT-- JSON snapshot of api_calls for cost breakdown
 );
 """
 
@@ -211,85 +113,18 @@ class StatusGuardError(Exception):
     """Raised when a status change lacks the required verifier verdict."""
 
 
-class _RowWrapper:
-    """Makes psycopg2 DictRow behave like sqlite3.Row for .keys() access."""
-    def __init__(self, row, keys):
-        self._row = row
-        self._keys = keys
-    
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return self._row[key]
-        return self._row[self._keys.index(key)] if key in self._keys else None
-    
-    def keys(self):
-        return self._keys
-
-
 class Store:
     def __init__(self, db_path: str = "data/pbc.db"):
         self.db_path = db_path
-        self._is_postgres = False
-        self._placeholder = "?"  # SQLite style
-        
-        # Check for DATABASE_URL (PostgreSQL)
-        database_url = os.environ.get("DATABASE_URL")
-        if database_url:
-            self._init_postgres(database_url)
-        else:
-            self._init_sqlite(db_path)
-    
-    def _init_postgres(self, database_url: str) -> None:
-        """Initialize PostgreSQL connection."""
-        import psycopg2
-        import psycopg2.extras
-        
-        self._is_postgres = True
-        self._placeholder = "%s"
-        
-        # Railway uses postgres:// but psycopg2 needs postgresql://
-        if database_url.startswith("postgres://"):
-            database_url = database_url.replace("postgres://", "postgresql://", 1)
-        
-        self.conn = psycopg2.connect(database_url)
-        self.conn.autocommit = False
-        
-        # Create tables
-        with self.conn.cursor() as cur:
-            for stmt in _SCHEMA_PG.split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    try:
-                        cur.execute(stmt)
-                    except psycopg2.errors.DuplicateTable:
-                        self.conn.rollback()
-                    except Exception:
-                        self.conn.rollback()
-        self.conn.commit()
-        
-        # Run migrations for existing DBs
-        self._migrate_postgres()
-    
-    def _init_sqlite(self, db_path: str) -> None:
-        """Initialize SQLite connection."""
-        import sqlite3
-        from pathlib import Path
-        
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        
+        # check_same_thread=False: Streamlit caches Store across script reruns
+        # that execute on different threads (@st.cache_resource).
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Two processes share this DB (the agent runner and the Streamlit UI).
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.executescript(_SCHEMA_SQLITE)
-        
-        # Run migrations for existing DBs
-        self._migrate_sqlite()
-        self.conn.commit()
-    
-    def _migrate_sqlite(self) -> None:
-        """Run migrations for SQLite."""
-        import sqlite3
+        self.conn.executescript(_SCHEMA)
+        # migrate pre-existing DBs created before later columns were added
         for stmt in (
             "ALTER TABLE emails ADD COLUMN attachments TEXT",
             "ALTER TABLE items ADD COLUMN human_review TEXT DEFAULT 'Unreviewed'",
@@ -300,110 +135,25 @@ class Store:
                 self.conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
-    
-    def _migrate_postgres(self) -> None:
-        """Run migrations for PostgreSQL."""
-        import psycopg2
-        migrations = [
-            "ALTER TABLE emails ADD COLUMN IF NOT EXISTS attachments TEXT",
-            "ALTER TABLE items ADD COLUMN IF NOT EXISTS human_review TEXT DEFAULT 'Unreviewed'",
-            "ALTER TABLE items ADD COLUMN IF NOT EXISTS human_note TEXT",
-            "ALTER TABLE items ADD COLUMN IF NOT EXISTS reviewed_at DOUBLE PRECISION",
-        ]
-        with self.conn.cursor() as cur:
-            for stmt in migrations:
-                try:
-                    cur.execute(stmt)
-                except psycopg2.Error:
-                    self.conn.rollback()
-        self.conn.commit()
-    
-    def _q(self, sql: str) -> str:
-        """Convert ? placeholders to %s for PostgreSQL."""
-        if self._is_postgres:
-            return sql.replace("?", "%s")
-        return sql
-    
-    def execute(self, sql: str, params: tuple = ()) -> Any:
-        """Execute a query, handling differences between SQLite and PostgreSQL."""
-        sql = self._q(sql)
-        if self._is_postgres:
-            import psycopg2.extras
-            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                cur.execute(sql, params)
-                return cur
-        else:
-            return self.conn.execute(sql, params)
-    
-    def fetchone(self, sql: str, params: tuple = ()) -> Optional[Any]:
-        """Execute and fetch one row."""
-        sql = self._q(sql)
-        if self._is_postgres:
-            import psycopg2.extras
-            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params)
-                row = cur.fetchone()
-                return dict(row) if row else None
-        else:
-            row = self.conn.execute(sql, params).fetchone()
-            return row
-    
-    def fetchall(self, sql: str, params: tuple = ()) -> list:
-        """Execute and fetch all rows."""
-        sql = self._q(sql)
-        if self._is_postgres:
-            import psycopg2.extras
-            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params)
-                return [dict(row) for row in cur.fetchall()]
-        else:
-            return self.conn.execute(sql, params).fetchall()
-    
-    def execute_returning(self, sql: str, params: tuple, id_col: str) -> int:
-        """Execute an INSERT and return the auto-generated ID."""
-        if self._is_postgres:
-            sql = self._q(sql) + f" RETURNING {id_col}"
-            with self.conn.cursor() as cur:
-                cur.execute(sql, params)
-                result = cur.fetchone()[0]
-                self.conn.commit()
-                return result
-        else:
-            cur = self.conn.execute(sql, params)
-            self.conn.commit()
-            return cur.lastrowid
-    
-    def commit(self) -> None:
-        """Commit the current transaction."""
         self.conn.commit()
 
     # ---------- items ----------
     def load_items(self, items: list[dict]) -> None:
         for it in items:
-            sql = """INSERT INTO items
+            self.conn.execute(
+                """INSERT OR IGNORE INTO items
                    (item_id, category, priority, description, acceptance, expected_docs, status, updated_at)
-                   VALUES (?,?,?,?,?,?, 'Not started', ?)"""
-            if self._is_postgres:
-                sql = self._q(sql) + " ON CONFLICT (item_id) DO NOTHING"
-            else:
-                sql = sql.replace("INSERT INTO", "INSERT OR IGNORE INTO")
-            
-            if self._is_postgres:
-                with self.conn.cursor() as cur:
-                    cur.execute(sql, (it["item_id"], it.get("category"), it.get("priority"),
-                                     it.get("description"), it.get("acceptance"),
-                                     it.get("expected_docs"), time.time()))
-            else:
-                self.conn.execute(sql, (it["item_id"], it.get("category"), it.get("priority"),
-                                       it.get("description"), it.get("acceptance"),
-                                       it.get("expected_docs"), time.time()))
+                   VALUES (?,?,?,?,?,?, 'Not started', ?)""",
+                (it["item_id"], it.get("category"), it.get("priority"), it.get("description"),
+                 it.get("acceptance"), it.get("expected_docs"), time.time()),
+            )
         self.conn.commit()
 
-    def get_item(self, item_id: str) -> Optional[dict]:
-        return self.fetchone("SELECT * FROM items WHERE item_id=?", (item_id,))
+    def get_item(self, item_id: str) -> Optional[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
 
-    def all_items(self) -> list:
-        return self.fetchall("SELECT * FROM items ORDER BY item_id")
+    def all_items(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM items ORDER BY item_id").fetchall()
 
     def update_item_status(self, item_id: str, status: str, *, confidence: float | None = None,
                            rationale: str | None = None, doc_id: int | None = None,
@@ -413,122 +163,125 @@ class Store:
         if self.get_item(item_id) is None:
             raise ValueError(f"Unknown item {item_id!r}")
         if status in GUARDED_STATUSES:
-            row = self.fetchone(
+            row = self.conn.execute(
                 "SELECT id FROM verifications WHERE item_id=? AND (? IS NULL OR doc_id=?) "
                 "ORDER BY ts DESC LIMIT 1",
                 (item_id, doc_id, doc_id),
-            )
+            ).fetchone()
             if row is None:
                 raise StatusGuardError(
                     f"Refusing to set {item_id} to {status!r}: no verify_item verdict on record"
                     + (f" for doc {doc_id}" if doc_id else "")
                     + ". Call verify_item first."
                 )
-        
-        sql = """UPDATE items SET status=?,
+        self.conn.execute(
+            """UPDATE items SET status=?,
                confidence=COALESCE(?, confidence),
                rationale=COALESCE(?, rationale),
                latest_doc_id=COALESCE(?, latest_doc_id),
                source_email_id=COALESCE(?, source_email_id),
-               updated_at=? WHERE item_id=?"""
-        
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (status, confidence, rationale, doc_id, email_id,
-                                          time.time(), item_id))
-        else:
-            self.conn.execute(sql, (status, confidence, rationale, doc_id, email_id,
-                                   time.time(), item_id))
+               updated_at=? WHERE item_id=?""",
+            (status, confidence, rationale, doc_id, email_id, time.time(), item_id),
+        )
         self.conn.commit()
 
     def set_human_review(self, item_id: str, review: str, note: str = "") -> None:
-        """DEPRECATED: Use set_user_review for multi-tenant support."""
+        """Auditor sign-off on an item's tracked state — separate from agent status.
+        DEPRECATED: Use set_user_review for multi-tenant support."""
         if review not in ("Unreviewed", "Approved", "Rejected"):
             raise ValueError(f"Unknown review value {review!r}")
         if self.get_item(item_id) is None:
             raise ValueError(f"Unknown item {item_id!r}")
-        
-        sql = "UPDATE items SET human_review=?, human_note=?, reviewed_at=? WHERE item_id=?"
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (review, note, time.time(), item_id))
-        else:
-            self.conn.execute(sql, (review, note, time.time(), item_id))
+        self.conn.execute(
+            "UPDATE items SET human_review=?, human_note=?, reviewed_at=? WHERE item_id=?",
+            (review, note, time.time(), item_id))
         self.conn.commit()
 
     # ---------- users & multi-tenant reviews ----------
     def create_user(self, username: str, password: str, display_name: str = "",
                     role: str = "reviewer") -> int:
+        """Create a new user. Password is hashed with SHA-256 (simple, not production-grade)."""
         import hashlib
         if role not in ("reviewer", "lead", "admin"):
             raise ValueError(f"Unknown role {role!r}")
         password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
         try:
-            return self.execute_returning(
+            cur = self.conn.execute(
                 "INSERT INTO users (username, password_hash, display_name, role, created_at) "
                 "VALUES (?,?,?,?,?)",
-                (username.lower(), password_hash, display_name or username, role, time.time()),
-                "user_id"
-            )
-        except Exception as e:
-            if "unique" in str(e).lower() or "duplicate" in str(e).lower():
-                raise ValueError(f"Username {username!r} already exists")
-            raise
+                (username.lower(), password_hash, display_name or username, role, time.time()))
+            self.conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            raise ValueError(f"Username {username!r} already exists")
 
     def authenticate_user(self, username: str, password: str) -> dict | None:
+        """Verify credentials. Returns user dict or None if invalid."""
         import hashlib
         password_hash = hashlib.sha256(password.encode()).hexdigest()
-        return self.fetchone(
+        row = self.conn.execute(
             "SELECT * FROM users WHERE username=? AND password_hash=?",
-            (username.lower(), password_hash))
+            (username.lower(), password_hash)).fetchone()
+        if row:
+            return {k: row[k] for k in row.keys()}
+        return None
 
     def get_user(self, user_id: int) -> dict | None:
-        return self.fetchone("SELECT * FROM users WHERE user_id=?", (user_id,))
+        """Get user by ID."""
+        row = self.conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            return {k: row[k] for k in row.keys()}
+        return None
 
     def get_user_by_username(self, username: str) -> dict | None:
-        return self.fetchone("SELECT * FROM users WHERE username=?", (username.lower(),))
+        """Get user by username."""
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE username=?", (username.lower(),)).fetchone()
+        if row:
+            return {k: row[k] for k in row.keys()}
+        return None
 
     def list_users(self) -> list[dict]:
-        return self.fetchall(
-            "SELECT user_id, username, display_name, role, created_at FROM users ORDER BY username")
+        """List all users."""
+        rows = self.conn.execute(
+            "SELECT user_id, username, display_name, role, created_at FROM users ORDER BY username"
+        ).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
 
     def set_user_review(self, item_id: str, user_id: int, review: str, note: str = "") -> None:
+        """Set a specific user's review for an item."""
         if review not in ("Unreviewed", "Approved", "Rejected"):
             raise ValueError(f"Unknown review value {review!r}")
         if self.get_item(item_id) is None:
             raise ValueError(f"Unknown item {item_id!r}")
         if self.get_user(user_id) is None:
             raise ValueError(f"Unknown user {user_id!r}")
-        
-        if self._is_postgres:
-            sql = """INSERT INTO item_reviews (item_id, user_id, review, note, reviewed_at)
-                   VALUES (%s,%s,%s,%s,%s)
-                   ON CONFLICT(item_id, user_id) DO UPDATE SET
-                   review=EXCLUDED.review, note=EXCLUDED.note, reviewed_at=EXCLUDED.reviewed_at"""
-            with self.conn.cursor() as cur:
-                cur.execute(sql, (item_id, user_id, review, note, time.time()))
-        else:
-            sql = """INSERT INTO item_reviews (item_id, user_id, review, note, reviewed_at)
-                   VALUES (?,?,?,?,?)
-                   ON CONFLICT(item_id, user_id) DO UPDATE SET
-                   review=excluded.review, note=excluded.note, reviewed_at=excluded.reviewed_at"""
-            self.conn.execute(sql, (item_id, user_id, review, note, time.time()))
+        self.conn.execute(
+            """INSERT INTO item_reviews (item_id, user_id, review, note, reviewed_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(item_id, user_id) DO UPDATE SET
+               review=excluded.review, note=excluded.note, reviewed_at=excluded.reviewed_at""",
+            (item_id, user_id, review, note, time.time()))
         self.conn.commit()
 
     def get_item_reviews(self, item_id: str) -> list[dict]:
-        return self.fetchall(
+        """Get all reviews for an item, with user info."""
+        rows = self.conn.execute(
             """SELECT r.*, u.username, u.display_name, u.role
                FROM item_reviews r JOIN users u ON r.user_id = u.user_id
                WHERE r.item_id=? ORDER BY r.reviewed_at""",
-            (item_id,))
+            (item_id,)).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
 
     def get_user_reviews(self, user_id: int) -> list[dict]:
-        return self.fetchall(
+        """Get all reviews by a specific user."""
+        rows = self.conn.execute(
             "SELECT * FROM item_reviews WHERE user_id=? ORDER BY reviewed_at DESC",
-            (user_id,))
+            (user_id,)).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
 
     def get_review_summary(self) -> dict:
+        """Get summary of reviews across all items and users."""
         items = self.all_items()
         users = self.list_users()
         summary = {
@@ -538,9 +291,8 @@ class Store:
             "by_user": {},
         }
         for it in items:
-            item_id = it["item_id"] if isinstance(it, dict) else it[0]
-            reviews = self.get_item_reviews(item_id)
-            summary["by_item"][item_id] = {
+            reviews = self.get_item_reviews(it["item_id"])
+            summary["by_item"][it["item_id"]] = {
                 "reviews": reviews,
                 "approved_count": sum(1 for r in reviews if r["review"] == "Approved"),
                 "rejected_count": sum(1 for r in reviews if r["review"] == "Rejected"),
@@ -557,113 +309,100 @@ class Store:
         return summary
 
     def ensure_default_admin(self) -> None:
+        """Create a default admin user if no users exist."""
         if not self.list_users():
             self.create_user("admin", "admin", "Administrator", "admin")
 
     # ---------- documents ----------
     def register_document(self, filename: str, path: str, sha256: str, email_id: str,
                           semantic_key: str, parent_doc_id: int | None = None) -> dict:
-        dup = self.fetchone(
-            "SELECT doc_id, version FROM documents WHERE sha256=?", (sha256,))
+        """Insert a document, chaining versions by semantic key. Returns lineage info."""
+        dup = self.conn.execute(
+            "SELECT doc_id, version FROM documents WHERE sha256=?", (sha256,)
+        ).fetchone()
         if dup:
             return {"doc_id": dup["doc_id"], "version": dup["version"],
                     "supersedes": None, "duplicate": True}
-        
-        prev = self.fetchone(
+        prev = self.conn.execute(
             "SELECT doc_id, version FROM documents WHERE semantic_key=? ORDER BY version DESC LIMIT 1",
-            (semantic_key,))
+            (semantic_key,),
+        ).fetchone()
         version = (prev["version"] + 1) if prev else 1
         supersedes = prev["doc_id"] if prev else None
-        
-        doc_id = self.execute_returning(
+        cur = self.conn.execute(
             """INSERT INTO documents (filename, path, sha256, email_id, semantic_key,
                                       version, supersedes, parent_doc_id, registered_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (filename, path, sha256, email_id, semantic_key, version, supersedes,
              parent_doc_id, time.time()),
-            "doc_id"
         )
-        return {"doc_id": doc_id, "version": version,
+        self.conn.commit()
+        return {"doc_id": cur.lastrowid, "version": version,
                 "supersedes": supersedes, "duplicate": False}
 
-    def get_document(self, doc_id: int) -> Optional[dict]:
-        return self.fetchone("SELECT * FROM documents WHERE doc_id=?", (doc_id,))
+    def get_document(self, doc_id: int) -> Optional[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM documents WHERE doc_id=?", (doc_id,)).fetchone()
 
-    def lineage(self, doc_id: int) -> list:
+    def lineage(self, doc_id: int) -> list[sqlite3.Row]:
         doc = self.get_document(doc_id)
         if doc is None:
             return []
-        return self.fetchall(
-            "SELECT * FROM documents WHERE semantic_key=? ORDER BY version",
-            (doc["semantic_key"],))
+        return self.conn.execute(
+            "SELECT * FROM documents WHERE semantic_key=? ORDER BY version", (doc["semantic_key"],)
+        ).fetchall()
 
     # ---------- episodes / trace ----------
     def start_episode(self, email_id: str, model: str, escalated_from: int | None = None) -> int:
-        return self.execute_returning(
+        cur = self.conn.execute(
             "INSERT INTO episodes (email_id, model, escalated_from, started_at) VALUES (?,?,?,?)",
             (email_id, model, escalated_from, time.time()),
-            "episode_id"
         )
+        self.conn.commit()
+        return cur.lastrowid
 
     def end_episode(self, episode_id: int, summary: str = "") -> None:
-        sql = "UPDATE episodes SET ended_at=?, summary=? WHERE episode_id=?"
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (time.time(), summary, episode_id))
-        else:
-            self.conn.execute(sql, (time.time(), summary, episode_id))
+        self.conn.execute("UPDATE episodes SET ended_at=?, summary=? WHERE episode_id=?",
+                          (time.time(), summary, episode_id))
         self.conn.commit()
 
     def add_trace(self, episode_id: int, kind: str, name: str, payload: Any) -> None:
-        seq_row = self.fetchone(
-            "SELECT COALESCE(MAX(seq),0)+1 as seq FROM trace WHERE episode_id=?", (episode_id,))
-        seq = seq_row["seq"] if isinstance(seq_row, dict) else seq_row[0]
-        
-        sql = "INSERT INTO trace (episode_id, seq, kind, name, payload, ts) VALUES (?,?,?,?,?,?)"
-        payload_str = payload if isinstance(payload, str) else json.dumps(payload, default=str)
-        
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (episode_id, seq, kind, name, payload_str, time.time()))
-        else:
-            self.conn.execute(sql, (episode_id, seq, kind, name, payload_str, time.time()))
+        seq = self.conn.execute(
+            "SELECT COALESCE(MAX(seq),0)+1 FROM trace WHERE episode_id=?", (episode_id,)
+        ).fetchone()[0]
+        self.conn.execute(
+            "INSERT INTO trace (episode_id, seq, kind, name, payload, ts) VALUES (?,?,?,?,?,?)",
+            (episode_id, seq, kind, name,
+             payload if isinstance(payload, str) else json.dumps(payload, default=str),
+             time.time()),
+        )
         self.conn.commit()
 
     # ---------- verifications ----------
     def add_verification(self, item_id: str, doc_id: int, verdict: str, rationale: str,
                          criteria: Any, confidence: float, episode_id: int) -> None:
-        sql = """INSERT INTO verifications (item_id, doc_id, verdict, rationale, criteria,
-                                          confidence, episode_id, ts) VALUES (?,?,?,?,?,?,?,?)"""
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (item_id, doc_id, verdict, rationale,
-                                          json.dumps(criteria, default=str),
-                                          confidence, episode_id, time.time()))
-        else:
-            self.conn.execute(sql, (item_id, doc_id, verdict, rationale,
-                                   json.dumps(criteria, default=str),
-                                   confidence, episode_id, time.time()))
+        self.conn.execute(
+            """INSERT INTO verifications (item_id, doc_id, verdict, rationale, criteria,
+                                          confidence, episode_id, ts) VALUES (?,?,?,?,?,?,?,?)""",
+            (item_id, doc_id, verdict, rationale, json.dumps(criteria, default=str),
+             confidence, episode_id, time.time()),
+        )
         self.conn.commit()
 
     # ---------- cost ----------
     def add_api_call(self, episode_id: int | None, model: str, purpose: str,
                      input_tokens: int, output_tokens: int, cache_read: int,
                      cache_write: int, cost_usd: float) -> None:
-        sql = """INSERT INTO api_calls (episode_id, model, purpose, input_tokens, output_tokens,
+        self.conn.execute(
+            """INSERT INTO api_calls (episode_id, model, purpose, input_tokens, output_tokens,
                                       cache_read_tokens, cache_write_tokens, cost_usd, ts)
-               VALUES (?,?,?,?,?,?,?,?,?)"""
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (episode_id, model, purpose, input_tokens, output_tokens,
-                                          cache_read, cache_write, cost_usd, time.time()))
-        else:
-            self.conn.execute(sql, (episode_id, model, purpose, input_tokens, output_tokens,
-                                   cache_read, cache_write, cost_usd, time.time()))
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (episode_id, model, purpose, input_tokens, output_tokens, cache_read,
+             cache_write, cost_usd, time.time()),
+        )
         self.conn.commit()
 
     def total_cost(self) -> float:
-        row = self.fetchone("SELECT COALESCE(SUM(cost_usd),0) as total FROM api_calls")
-        return row["total"] if isinstance(row, dict) else row[0]
+        return self.conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM api_calls").fetchone()[0]
 
     # ---------- misc ----------
     def add_email(self, e: dict) -> None:
@@ -672,82 +411,69 @@ class Store:
             {"filename": a.filename, "path": a.path, "sha256": a.sha256, "size": a.size}
             for a in (e.get("attachments") or [])
         ]
-        sql = """INSERT INTO emails (email_id, thread_id, from_addr, from_name,
+        self.conn.execute(
+            """INSERT OR IGNORE INTO emails (email_id, thread_id, from_addr, from_name,
                to_addrs, subject, date, body, attachments, processed_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)"""
-        if self._is_postgres:
-            sql = self._q(sql) + " ON CONFLICT (email_id) DO NOTHING"
-            with self.conn.cursor() as cur:
-                cur.execute(sql, (e["email_id"], e["thread_id"], e["from_addr"], e["from_name"],
-                                 json.dumps(e["to_addrs"]), e["subject"], e["date"], e["body"],
-                                 json.dumps(atts), time.time()))
-        else:
-            sql = sql.replace("INSERT INTO", "INSERT OR IGNORE INTO")
-            self.conn.execute(sql, (e["email_id"], e["thread_id"], e["from_addr"], e["from_name"],
-                                   json.dumps(e["to_addrs"]), e["subject"], e["date"], e["body"],
-                                   json.dumps(atts), time.time()))
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (e["email_id"], e["thread_id"], e["from_addr"], e["from_name"],
+             json.dumps(e["to_addrs"]), e["subject"], e["date"], e["body"],
+             json.dumps(atts), time.time()),
+        )
         self.conn.commit()
 
     def add_clarification(self, item_id: str | None, question: str, recipient: str,
                           email_id: str, episode_id: int) -> None:
-        sql = ("INSERT INTO clarifications (item_id, question, recipient, email_id, episode_id, ts)"
-               " VALUES (?,?,?,?,?,?)")
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(self._q(sql), (item_id, question, recipient, email_id, episode_id, time.time()))
-        else:
-            self.conn.execute(sql, (item_id, question, recipient, email_id, episode_id, time.time()))
+        self.conn.execute(
+            "INSERT INTO clarifications (item_id, question, recipient, email_id, episode_id, ts)"
+            " VALUES (?,?,?,?,?,?)",
+            (item_id, question, recipient, email_id, episode_id, time.time()),
+        )
         self.conn.commit()
 
     def add_draft(self, recipient: str, subject: str, body: str, item_ids: list[str]) -> int:
-        return self.execute_returning(
+        cur = self.conn.execute(
             "INSERT INTO drafts (recipient, subject, body, item_ids, created_at) VALUES (?,?,?,?,?)",
             (recipient, subject, body, json.dumps(item_ids), time.time()),
-            "id"
         )
+        self.conn.commit()
+        return cur.lastrowid
 
     def reset_all(self) -> None:
-        """Wipe run data for a fresh restart."""
+        """Wipe run data for a fresh restart, in place (keeps the file/inode so an
+        open UI connection stays valid, and keeps the OCR cache — content-hash
+        keyed vision transcriptions stay correct and cost money to redo).
+        
+        Archives the current run to run_history before clearing."""
+        # Archive the current run if there's anything to archive
         self._archive_current_run()
         
         for table in ("items", "documents", "episodes", "trace", "verifications",
-                      "clarifications", "drafts", "api_calls", "emails", "item_reviews"):
-            if self._is_postgres:
-                with self.conn.cursor() as cur:
-                    cur.execute(f"DELETE FROM {table}")
-            else:
-                self.conn.execute(f"DELETE FROM {table}")
-        
-        # Keep OCR cache
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
-        else:
-            self.conn.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
+                      "clarifications", "drafts", "api_calls", "emails"):
+            self.conn.execute(f"DELETE FROM {table}")
+        self.conn.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
         self.conn.commit()
 
     def _archive_current_run(self) -> int | None:
-        """Archive current run data to run_history."""
-        count_row = self.fetchone("SELECT COUNT(*) as cnt FROM episodes")
-        episode_count = count_row["cnt"] if isinstance(count_row, dict) else count_row[0]
+        """Archive current run data to run_history. Returns run_id or None if nothing to archive."""
+        # Check if there's anything to archive
+        episode_count = self.conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
         if episode_count == 0:
             return None
         
-        first_row = self.fetchone("SELECT MIN(started_at) as ts FROM episodes")
-        first_episode = first_row["ts"] if isinstance(first_row, dict) else first_row[0]
+        # Gather timestamps
+        first_episode = self.conn.execute(
+            "SELECT MIN(started_at) FROM episodes").fetchone()[0]
+        last_episode = self.conn.execute(
+            "SELECT MAX(ended_at) FROM episodes").fetchone()[0]
         
-        last_row = self.fetchone("SELECT MAX(ended_at) as ts FROM episodes")
-        last_episode = last_row["ts"] if isinstance(last_row, dict) else last_row[0]
-        
+        # Determine run status
         status = self.get_meta("run_status") or "unknown"
+        
+        # Build summary
         total_cost = self.total_cost()
-        
-        email_row = self.fetchone("SELECT COUNT(*) as cnt FROM emails")
-        email_count = email_row["cnt"] if isinstance(email_row, dict) else email_row[0]
-        
-        esc_row = self.fetchone("SELECT COUNT(*) as cnt FROM episodes WHERE escalated_from IS NOT NULL")
-        escalation_count = esc_row["cnt"] if isinstance(esc_row, dict) else esc_row[0]
-        
+        email_count = self.conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        escalation_count = self.conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE escalated_from IS NOT NULL").fetchone()[0]
         summary = json.dumps({
             "total_emails": email_count,
             "total_episodes": episode_count,
@@ -756,45 +482,59 @@ class Store:
             "run_args": json.loads(self.get_meta("run_args") or "null"),
         })
         
-        items = self.fetchall("SELECT * FROM items")
-        items_list = [dict(row) if not isinstance(row, dict) else row for row in items]
+        # Snapshot items
+        items = [{k: row[k] for k in row.keys()}
+                 for row in self.conn.execute("SELECT * FROM items").fetchall()]
         
+        # Snapshot episodes with their traces
         episodes_data = []
-        for ep in self.fetchall("SELECT * FROM episodes ORDER BY episode_id"):
-            ep_dict = dict(ep) if not isinstance(ep, dict) else ep
-            traces = self.fetchall(
-                "SELECT * FROM trace WHERE episode_id=? ORDER BY seq",
-                (ep_dict["episode_id"],))
-            ep_dict["traces"] = [dict(t) if not isinstance(t, dict) else t for t in traces]
-            verifs = self.fetchall(
-                "SELECT * FROM verifications WHERE episode_id=?",
-                (ep_dict["episode_id"],))
-            ep_dict["verifications"] = [dict(v) if not isinstance(v, dict) else v for v in verifs]
+        for ep in self.conn.execute("SELECT * FROM episodes ORDER BY episode_id").fetchall():
+            ep_dict = {k: ep[k] for k in ep.keys()}
+            traces = [{k: t[k] for k in t.keys()}
+                      for t in self.conn.execute(
+                          "SELECT * FROM trace WHERE episode_id=? ORDER BY seq",
+                          (ep["episode_id"],)).fetchall()]
+            ep_dict["traces"] = traces
+            # Include verifications for this episode
+            verifs = [{k: v[k] for k in v.keys()}
+                      for v in self.conn.execute(
+                          "SELECT * FROM verifications WHERE episode_id=?",
+                          (ep["episode_id"],)).fetchall()]
+            ep_dict["verifications"] = verifs
             episodes_data.append(ep_dict)
         
-        drafts = self.fetchall("SELECT * FROM drafts")
-        drafts_list = [dict(d) if not isinstance(d, dict) else d for d in drafts]
+        # Snapshot drafts
+        drafts = [{k: d[k] for k in d.keys()}
+                  for d in self.conn.execute("SELECT * FROM drafts").fetchall()]
         
-        api_calls = self.fetchall("SELECT * FROM api_calls")
-        api_calls_list = [dict(c) if not isinstance(c, dict) else c for c in api_calls]
+        # Snapshot API calls for cost breakdown
+        api_calls = [{k: c[k] for k in c.keys()}
+                     for c in self.conn.execute("SELECT * FROM api_calls").fetchall()]
         
-        return self.execute_returning(
+        # Insert into run_history
+        cur = self.conn.execute(
             """INSERT INTO run_history 
                (started_at, ended_at, status, summary, items_snapshot, 
                 episodes_snapshot, drafts_snapshot, api_calls_snapshot)
                VALUES (?,?,?,?,?,?,?,?)""",
             (first_episode, last_episode or time.time(), status, summary,
-             json.dumps(items_list), json.dumps(episodes_data),
-             json.dumps(drafts_list), json.dumps(api_calls_list)),
-            "run_id"
+             json.dumps(items), json.dumps(episodes_data),
+             json.dumps(drafts), json.dumps(api_calls))
         )
+        self.conn.commit()
+        return cur.lastrowid
 
     def get_run_history(self) -> list[dict]:
-        return self.fetchall(
-            "SELECT run_id, started_at, ended_at, status, summary FROM run_history ORDER BY run_id DESC")
+        """Get list of archived runs (metadata only, not full snapshots)."""
+        rows = self.conn.execute(
+            "SELECT run_id, started_at, ended_at, status, summary FROM run_history ORDER BY run_id DESC"
+        ).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
 
     def get_run_snapshot(self, run_id: int) -> dict | None:
-        row = self.fetchone("SELECT * FROM run_history WHERE run_id=?", (run_id,))
+        """Get full snapshot data for a specific run."""
+        row = self.conn.execute(
+            "SELECT * FROM run_history WHERE run_id=?", (run_id,)).fetchone()
         if not row:
             return None
         return {
@@ -810,48 +550,29 @@ class Store:
         }
 
     def delete_run_history(self, run_id: int) -> bool:
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute("DELETE FROM run_history WHERE run_id=%s", (run_id,))
-                deleted = cur.rowcount > 0
-        else:
-            cur = self.conn.execute("DELETE FROM run_history WHERE run_id=?", (run_id,))
-            deleted = cur.rowcount > 0
+        """Delete a specific run from history."""
+        cur = self.conn.execute("DELETE FROM run_history WHERE run_id=?", (run_id,))
         self.conn.commit()
-        return deleted
+        return cur.rowcount > 0
 
     def set_meta(self, key: str, value: str) -> None:
-        if self._is_postgres:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO meta (key, value) VALUES (%s, %s) "
-                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                    (key, value))
-        else:
-            self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
         self.conn.commit()
 
     def get_meta(self, key: str) -> str | None:
-        row = self.fetchone("SELECT value FROM meta WHERE key=?", (key,))
-        if row is None:
-            return None
-        return row["value"] if isinstance(row, dict) else row[0]
+        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
 
     def tracker_summary(self) -> str:
         """Compact tracker state injected into each episode prompt."""
         lines = []
         for it in self.all_items():
-            item_id = it["item_id"] if isinstance(it, dict) else it[0]
-            status = it["status"] if isinstance(it, dict) else it[6]
-            latest_doc_id = it["latest_doc_id"] if isinstance(it, dict) else it[9]
-            rationale = it["rationale"] if isinstance(it, dict) else it[8]
-            
-            line = f"{item_id} [{status}]"
-            if latest_doc_id:
-                doc = self.get_document(latest_doc_id)
+            line = f"{it['item_id']} [{it['status']}]"
+            if it["latest_doc_id"]:
+                doc = self.get_document(it["latest_doc_id"])
                 if doc:
                     line += f" latest_doc={doc['filename']} (doc_id={doc['doc_id']} v{doc['version']})"
-            if rationale:
-                line += f" — {rationale[:120]}"
+            if it["rationale"]:
+                line += f" — {it['rationale'][:120]}"
             lines.append(line)
         return "\n".join(lines)

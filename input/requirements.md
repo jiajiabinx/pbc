@@ -64,7 +64,7 @@ Ingestion, OCR, Excel parsing, embedding search, field extraction, drafting — 
 * **Runs end-to-end on the held-out mailbox live at the review**, cold, from a clean checkout.  
 * **Every status decision has a full agent trace** — plan, tool calls, verifier verdict — defensible to a PCAOB inspector.   
 * **$5 max per PBC list processed** in real LLM/API spend, measured.   
-* **No hardcoded client- or engagement-specific logic.what** The PBC list is the config. We'll swap it at the review.  
+* **No hardcoded client- or engagement-specific logic.** The PBC list is the config. We'll swap it at the review.  
 * **Deterministic tests** around non-LLM logic (parsing, versioning, state).
 
 ## **Bonus (strongly encouraged)**

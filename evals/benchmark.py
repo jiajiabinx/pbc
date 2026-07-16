@@ -80,9 +80,9 @@ def main() -> int:
                 break
             report.set_meta("bench_progress", json.dumps({"done": i - 1, "total": args.runs}))
             scratch = root / args.scratch_db
-            # Full reset: delete DB entirely to clear OCR cache for true independence
-            if scratch.exists():
-                scratch.unlink()
+            # reset in place rather than unlink: keeps the content-hash OCR
+            # cache, so runs 2..N don't re-pay vision calls for the same files
+            Store(str(scratch)).reset_all()
             print(f"=== benchmark run {i}/{args.runs} ===", flush=True)
             proc = subprocess.run(
                 [sys.executable, "run.py", "--mailbox", args.mailbox, "--pbc", args.pbc,

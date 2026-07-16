@@ -514,7 +514,7 @@ def _tool_verify_item(ctx: ToolContext, inp: dict) -> str:
     )
     verdict = models.structured_json(
         ctx.router, models.VERIFIER, purpose=f"verify:{item['item_id']}",
-        episode_id=ctx.episode_id, max_tokens=8000, enable_thinking=True,
+        episode_id=ctx.episode_id, max_tokens=4000,
         schema=_VERIFY_SCHEMA, system=system, user=user)
     ctx.store.add_verification(item["item_id"], doc["doc_id"], verdict["verdict"],
                                verdict["rationale"], verdict["criteria"],
