@@ -70,19 +70,19 @@ def request(store, control: str) -> None:
 
 def start(store, mailbox: str, pbc: str, profile: str, *,
           fresh: bool = False, budget: float = 2.0, api_key: str = "") -> int:
-    """Spawn `run.py` as a background process. The OpenRouter key comes from the
+    """Spawn `run.py` as a background process. The Anthropic key comes from the
     `api_key` argument (the UI field) or falls back to the UI's environment.
     The key is only put in the child's env — never written to the store."""
     if state(store)["alive"]:
         raise RuntimeError("A run is already in progress.")
     env = os.environ.copy()
     if api_key:
-        env["OPENROUTER_API_KEY"] = api_key
-    if not env.get("OPENROUTER_API_KEY"):
+        env["ANTHROPIC_API_KEY"] = api_key
+    if not (env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN")):
         raise RuntimeError(
-            "No OpenRouter API key — the runner would exit immediately. Paste a "
+            "No Anthropic API key — the runner would exit immediately. Paste a "
             "key in the run inputs, or restart Streamlit from a shell where "
-            "OPENROUTER_API_KEY is exported.")
+            "ANTHROPIC_API_KEY is exported.")
     if fresh:
         store.reset_all()
     store.set_meta("run_control", "run")
@@ -154,11 +154,11 @@ def bench_start(store, runs: int, mailbox: str, pbc: str, profile: str, *,
         raise RuntimeError("A benchmark is already in progress.")
     env = os.environ.copy()
     if api_key:
-        env["OPENROUTER_API_KEY"] = api_key
-    if not env.get("OPENROUTER_API_KEY"):
+        env["ANTHROPIC_API_KEY"] = api_key
+    if not (env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN")):
         raise RuntimeError(
-            "No OpenRouter API key — paste one in the sidebar's run inputs, or "
-            "restart Streamlit from a shell where OPENROUTER_API_KEY is exported.")
+            "No Anthropic API key — paste one in the sidebar's run inputs, or "
+            "restart Streamlit from a shell where ANTHROPIC_API_KEY is exported.")
     for key, val in (("bench_control", "run"), ("bench_status", "launching"),
                      ("bench_error", ""), ("bench_progress", "{}"),
                      ("bench_results", "[]"), ("bench_summary", "{}"),

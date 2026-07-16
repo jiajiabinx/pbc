@@ -47,7 +47,7 @@ def _outstanding_items(store: Store) -> list[dict]:
 
 def _correspondents(store: Store) -> str:
     rows = store.fetchall(
-        "SELECT from_name, from_addr, COUNT(*) as n FROM pbc_emails GROUP BY from_addr ORDER BY n DESC")
+        "SELECT from_name, from_addr, COUNT(*) as n FROM emails GROUP BY from_addr ORDER BY n DESC")
     return "\n".join(f"  {r['from_name']} <{r['from_addr']}> ({r['n']} emails)" for r in rows)
 
 
@@ -56,7 +56,7 @@ def generate_drafts(store: Store, router: models.Router, profile_text: str) -> l
     if not items:
         return []
     clar_rows = store.fetchall(
-        "SELECT item_id, question, recipient FROM pbc_clarifications WHERE status='open'")
+        "SELECT item_id, question, recipient FROM clarifications WHERE status='open'")
     clarifications = [dict(r) if not isinstance(r, dict) else r for r in clar_rows]
 
     item_lines = "\n".join(

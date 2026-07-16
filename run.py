@@ -64,8 +64,8 @@ def main() -> int:
     ap.add_argument("--no-drafts", action="store_true", help="skip follow-up drafting")
     args = ap.parse_args()
 
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        print("OPENROUTER_API_KEY is not set.", file=sys.stderr)
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        print("ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) is not set.", file=sys.stderr)
         return 2
 
     if args.fresh and Path(args.db).exists():
@@ -102,7 +102,7 @@ def main() -> int:
         # Filter out emails that already have a completed episode (not just inserted into emails table)
         # This prevents duplicates when pausing/resuming runs
         already = {r["email_id"] for r in store.fetchall(
-            """SELECT DISTINCT email_id FROM pbc_episodes 
+            """SELECT DISTINCT email_id FROM episodes 
                WHERE ended_at IS NOT NULL AND summary NOT LIKE 'escalated:%'""")}
         todo = [e for e in emails if e.email_id not in already]
         print(f"Mailbox: {len(emails)} emails ({len(todo)} unprocessed)")

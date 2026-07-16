@@ -16,7 +16,7 @@
    ```
 
 4. **Set environment variables** in Railway dashboard:
-   - `OPENROUTER_API_KEY` (required) - Your OpenRouter API key (get one at openrouter.ai)
+   - `ANTHROPIC_API_KEY` (required) - Your Anthropic API key
 
 5. **Deploy** - Railway will build using the Dockerfile automatically
 
@@ -26,13 +26,9 @@
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key (provides live pricing) |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude models |
 | `DATABASE_URL` | Auto | Auto-injected by Railway when you add PostgreSQL |
 | `PORT` | No | Auto-set by Railway (default: 8501) |
-
-### Why OpenRouter?
-
-OpenRouter returns **live cost** in API responses. No hardcoded prices — the meter always reflects actual spend.
 
 ### Database
 
@@ -46,12 +42,22 @@ The app automatically detects `DATABASE_URL`:
 - Supports concurrent connections (UI + agent runner)
 - No SQLite file locking issues
 
-## Files
+### Lighter Deployment (Recommended)
+
+The default deployment uses `requirements-railway.txt` which omits 
+`sentence-transformers` (~2GB+ with PyTorch). The app falls back to 
+hashed-ngram matching which works well for PBC item matching.
+
+To use full ML embeddings, edit the Dockerfile to use `requirements.txt` instead.
+
+## Files Created
 
 | File | Purpose |
 |------|---------|
 | `Dockerfile` | Container build instructions |
 | `railway.toml` | Railway-specific configuration |
+| `requirements-railway.txt` | Lightweight dependencies + psycopg2 |
+| `.railwayignore` | Files to exclude from deployment |
 | `.env.example` | Environment variable template |
 
 ## Monitoring
@@ -63,28 +69,84 @@ The app automatically detects `DATABASE_URL`:
 
 - **Railway**: Free tier includes 500 hours/month, then $5/month Hobby plan
 - **Railway PostgreSQL**: Free tier includes 1GB storage
-- **OpenRouter**: Pay-as-you-go, budget limits enforced in the UI sidebar
+- **Anthropic API**: Set budget limits in the UI sidebar to avoid runaway costs
 
-## Local Development
+## Local Development with PostgreSQL
+
+To test PostgreSQL locally before deploying:
 
 ```bash
-# Set up environment
-export OPENROUTER_API_KEY=sk-or-...
-export DATABASE_URL=postgresql://user:pass@localhost:5432/pbc  # optional
+# Start a local PostgreSQL (using Docker)
+docker run -d --name pbc-postgres \
+  -e POSTGRES_PASSWORD=localpass \
+  -e POSTGRES_DB=pbc \
+  -p 5432:5432 \
+  postgres:15
 
-# Run
+# Set DATABASE_URL and run
+export DATABASE_URL="postgresql://postgres:localpass@localhost:5432/pbc"
 streamlit run ui.py
+```
+
+## Alternative: Docker Compose (Self-hosted)
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DATABASE_URL=postgresql://postgres:password@db:5432/pbc
+    depends_on:
+      - db
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=pbc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+```
+
+Run with:
+```bash
+ANTHROPIC_API_KEY=sk-ant-... docker-compose up
 ```
 
 ## Troubleshooting
 
-### "OPENROUTER_API_KEY not set"
+### "ANTHROPIC_API_KEY not set"
 Add the environment variable in Railway dashboard → Variables
 
 ### "DATABASE_URL not set" warning
 Add a PostgreSQL database to your Railway project (New → Database → PostgreSQL)
 
+### Connection errors to PostgreSQL
+- Check that the PostgreSQL service is running in Railway
+- Verify `DATABASE_URL` is properly injected (check Variables tab)
+
+### Build timeout
+Railway allows 20min builds by default. The slim image should build in <5min.
+
 ### Health check failing
 Check logs for Streamlit startup errors. Common issues:
 - Missing environment variables
 - Database connection failures
+- Port conflicts (Railway auto-assigns PORT)
+
+## Migration from SQLite
+
+If you have existing data in SQLite that you want to migrate to PostgreSQL:
+
+1. Export data from SQLite (use a tool like `sqlite3` or DBeaver)
+2. Import into PostgreSQL
+3. The schema is identical, just different placeholder syntax (`?` vs `%s`)
+
+Note: The app handles this automatically - same Python code works with both databases.

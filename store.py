@@ -20,7 +20,7 @@ GUARDED_STATUSES = {"Received", "Insufficient", "Complete"}
 
 # PostgreSQL schema (uses SERIAL instead of AUTOINCREMENT, TEXT for all strings)
 _SCHEMA_PG = """
-CREATE TABLE IF NOT EXISTS pbc_items (
+CREATE TABLE IF NOT EXISTS items (
     item_id TEXT PRIMARY KEY,
     category TEXT, priority TEXT, description TEXT,
     acceptance TEXT, expected_docs TEXT,
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS pbc_items (
     human_note TEXT, reviewed_at DOUBLE PRECISION,
     updated_at DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_documents (
+CREATE TABLE IF NOT EXISTS documents (
     doc_id SERIAL PRIMARY KEY,
     filename TEXT, path TEXT, sha256 TEXT,
     email_id TEXT, semantic_key TEXT,
@@ -39,50 +39,50 @@ CREATE TABLE IF NOT EXISTS pbc_documents (
     parent_doc_id INTEGER,
     registered_at DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_episodes (
+CREATE TABLE IF NOT EXISTS episodes (
     episode_id SERIAL PRIMARY KEY,
     email_id TEXT, model TEXT, escalated_from INTEGER,
     started_at DOUBLE PRECISION, ended_at DOUBLE PRECISION, summary TEXT
 );
-CREATE TABLE IF NOT EXISTS pbc_trace (
+CREATE TABLE IF NOT EXISTS trace (
     id SERIAL PRIMARY KEY,
     episode_id INTEGER, seq INTEGER,
     kind TEXT,
     name TEXT, payload TEXT, ts DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_verifications (
+CREATE TABLE IF NOT EXISTS verifications (
     id SERIAL PRIMARY KEY,
     item_id TEXT, doc_id INTEGER, verdict TEXT,
     rationale TEXT, criteria TEXT, confidence REAL,
     episode_id INTEGER, ts DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_clarifications (
+CREATE TABLE IF NOT EXISTS clarifications (
     id SERIAL PRIMARY KEY,
     item_id TEXT, question TEXT, recipient TEXT,
     email_id TEXT, episode_id INTEGER, status TEXT DEFAULT 'open', ts DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_drafts (
+CREATE TABLE IF NOT EXISTS drafts (
     id SERIAL PRIMARY KEY,
     recipient TEXT, subject TEXT, body TEXT,
     item_ids TEXT, status TEXT DEFAULT 'pending',
     created_at DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_api_calls (
+CREATE TABLE IF NOT EXISTS api_calls (
     id SERIAL PRIMARY KEY,
     episode_id INTEGER, model TEXT, purpose TEXT,
     input_tokens INTEGER, output_tokens INTEGER,
     cache_read_tokens INTEGER, cache_write_tokens INTEGER,
     cost_usd REAL, ts DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_emails (
+CREATE TABLE IF NOT EXISTS emails (
     email_id TEXT PRIMARY KEY,
     thread_id TEXT, from_addr TEXT, from_name TEXT,
     to_addrs TEXT, subject TEXT, date DOUBLE PRECISION, body TEXT,
     attachments TEXT,
     processed_at DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS pbc_users (
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS users (
     user_id SERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS pbc_users (
     role TEXT DEFAULT 'reviewer',
     created_at DOUBLE PRECISION
 );
-CREATE TABLE IF NOT EXISTS pbc_item_reviews (
+CREATE TABLE IF NOT EXISTS item_reviews (
     id SERIAL PRIMARY KEY,
     item_id TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS pbc_item_reviews (
     reviewed_at DOUBLE PRECISION,
     UNIQUE(item_id, user_id)
 );
-CREATE TABLE IF NOT EXISTS pbc_run_history (
+CREATE TABLE IF NOT EXISTS run_history (
     run_id SERIAL PRIMARY KEY,
     started_at DOUBLE PRECISION,
     ended_at DOUBLE PRECISION,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS pbc_run_history (
 
 # SQLite schema (original)
 _SCHEMA_SQLITE = """
-CREATE TABLE IF NOT EXISTS pbc_items (
+CREATE TABLE IF NOT EXISTS items (
     item_id TEXT PRIMARY KEY,
     category TEXT, priority TEXT, description TEXT,
     acceptance TEXT, expected_docs TEXT,
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS pbc_items (
     human_note TEXT, reviewed_at REAL,
     updated_at REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_documents (
+CREATE TABLE IF NOT EXISTS documents (
     doc_id INTEGER PRIMARY KEY AUTOINCREMENT,
     filename TEXT, path TEXT, sha256 TEXT,
     email_id TEXT, semantic_key TEXT,
@@ -133,50 +133,50 @@ CREATE TABLE IF NOT EXISTS pbc_documents (
     parent_doc_id INTEGER,
     registered_at REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_episodes (
+CREATE TABLE IF NOT EXISTS episodes (
     episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
     email_id TEXT, model TEXT, escalated_from INTEGER,
     started_at REAL, ended_at REAL, summary TEXT
 );
-CREATE TABLE IF NOT EXISTS pbc_trace (
+CREATE TABLE IF NOT EXISTS trace (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     episode_id INTEGER, seq INTEGER,
     kind TEXT,
     name TEXT, payload TEXT, ts REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_verifications (
+CREATE TABLE IF NOT EXISTS verifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id TEXT, doc_id INTEGER, verdict TEXT,
     rationale TEXT, criteria TEXT, confidence REAL,
     episode_id INTEGER, ts REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_clarifications (
+CREATE TABLE IF NOT EXISTS clarifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id TEXT, question TEXT, recipient TEXT,
     email_id TEXT, episode_id INTEGER, status TEXT DEFAULT 'open', ts REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_drafts (
+CREATE TABLE IF NOT EXISTS drafts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recipient TEXT, subject TEXT, body TEXT,
     item_ids TEXT, status TEXT DEFAULT 'pending',
     created_at REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_api_calls (
+CREATE TABLE IF NOT EXISTS api_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     episode_id INTEGER, model TEXT, purpose TEXT,
     input_tokens INTEGER, output_tokens INTEGER,
     cache_read_tokens INTEGER, cache_write_tokens INTEGER,
     cost_usd REAL, ts REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_emails (
+CREATE TABLE IF NOT EXISTS emails (
     email_id TEXT PRIMARY KEY,
     thread_id TEXT, from_addr TEXT, from_name TEXT,
     to_addrs TEXT, subject TEXT, date REAL, body TEXT,
     attachments TEXT,
     processed_at REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS pbc_users (
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS pbc_users (
     role TEXT DEFAULT 'reviewer',
     created_at REAL
 );
-CREATE TABLE IF NOT EXISTS pbc_item_reviews (
+CREATE TABLE IF NOT EXISTS item_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS pbc_item_reviews (
     reviewed_at REAL,
     UNIQUE(item_id, user_id)
 );
-CREATE TABLE IF NOT EXISTS pbc_run_history (
+CREATE TABLE IF NOT EXISTS run_history (
     run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at REAL,
     ended_at REAL,
@@ -255,46 +255,20 @@ class Store:
         self.conn.autocommit = False
         
         # Create tables
-        self._create_schema_pg()
+        with self.conn.cursor() as cur:
+            for stmt in _SCHEMA_PG.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    try:
+                        cur.execute(stmt)
+                    except psycopg2.errors.DuplicateTable:
+                        self.conn.rollback()
+                    except Exception:
+                        self.conn.rollback()
+        self.conn.commit()
         
         # Run migrations for existing DBs
         self._migrate_postgres()
-    
-    def _create_schema_pg(self) -> None:
-        """Create tables from the PG schema.
-
-        Each statement runs in its own transaction and commits immediately, so a
-        failure in one CREATE cannot roll back tables created earlier in the loop
-        (all statements use IF NOT EXISTS, so re-running is safe).
-        """
-        import psycopg2
-        for stmt in _SCHEMA_PG.split(";"):
-            stmt = stmt.strip()
-            if not stmt:
-                continue
-            try:
-                with self.conn.cursor() as cur:
-                    cur.execute(stmt)
-                self.conn.commit()
-            except psycopg2.Error:
-                self.conn.rollback()
-    
-    def _pg_table_exists(self, table: str) -> bool:
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
-            exists = cur.fetchone()[0] is not None
-        self.conn.rollback()
-        return exists
-    
-    def _pg_column_exists(self, table: str, column: str) -> bool:
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM information_schema.columns "
-                "WHERE table_name=%s AND column_name=%s",
-                (table, column))
-            exists = cur.fetchone() is not None
-        self.conn.rollback()
-        return exists
     
     def _init_sqlite(self, db_path: str) -> None:
         """Initialize SQLite connection."""
@@ -317,10 +291,10 @@ class Store:
         """Run migrations for SQLite."""
         import sqlite3
         for stmt in (
-            "ALTER TABLE pbc_emails ADD COLUMN attachments TEXT",
-            "ALTER TABLE pbc_items ADD COLUMN human_review TEXT DEFAULT 'Unreviewed'",
-            "ALTER TABLE pbc_items ADD COLUMN human_note TEXT",
-            "ALTER TABLE pbc_items ADD COLUMN reviewed_at REAL",
+            "ALTER TABLE emails ADD COLUMN attachments TEXT",
+            "ALTER TABLE items ADD COLUMN human_review TEXT DEFAULT 'Unreviewed'",
+            "ALTER TABLE items ADD COLUMN human_note TEXT",
+            "ALTER TABLE items ADD COLUMN reviewed_at REAL",
         ):
             try:
                 self.conn.execute(stmt)
@@ -330,35 +304,19 @@ class Store:
     def _migrate_postgres(self) -> None:
         """Run migrations for PostgreSQL."""
         import psycopg2
-        
-        # Self-heal a users table left in a broken state by an older/interrupted
-        # deploy (table exists but is missing the user_id column, e.g. created
-        # from the SQLite-only schema). Drop and recreate it along with the
-        # dependent item_reviews table, then recreate from the PG schema.
-        # ensure_default_admin() will repopulate the default admin account.
-        if self._pg_table_exists("pbc_users") and not self._pg_column_exists("pbc_users", "user_id"):
-            try:
-                with self.conn.cursor() as cur:
-                    cur.execute("DROP TABLE IF EXISTS pbc_item_reviews CASCADE")
-                    cur.execute("DROP TABLE IF EXISTS pbc_users CASCADE")
-                self.conn.commit()
-            except psycopg2.Error:
-                self.conn.rollback()
-            self._create_schema_pg()
-        
         migrations = [
-            "ALTER TABLE pbc_emails ADD COLUMN IF NOT EXISTS attachments TEXT",
-            "ALTER TABLE pbc_items ADD COLUMN IF NOT EXISTS human_review TEXT DEFAULT 'Unreviewed'",
-            "ALTER TABLE pbc_items ADD COLUMN IF NOT EXISTS human_note TEXT",
-            "ALTER TABLE pbc_items ADD COLUMN IF NOT EXISTS reviewed_at DOUBLE PRECISION",
+            "ALTER TABLE emails ADD COLUMN IF NOT EXISTS attachments TEXT",
+            "ALTER TABLE items ADD COLUMN IF NOT EXISTS human_review TEXT DEFAULT 'Unreviewed'",
+            "ALTER TABLE items ADD COLUMN IF NOT EXISTS human_note TEXT",
+            "ALTER TABLE items ADD COLUMN IF NOT EXISTS reviewed_at DOUBLE PRECISION",
         ]
-        for stmt in migrations:
-            try:
-                with self.conn.cursor() as cur:
+        with self.conn.cursor() as cur:
+            for stmt in migrations:
+                try:
                     cur.execute(stmt)
-                self.conn.commit()
-            except psycopg2.Error:
-                self.conn.rollback()
+                except psycopg2.Error:
+                    self.conn.rollback()
+        self.conn.commit()
     
     def _q(self, sql: str) -> str:
         """Convert ? placeholders to %s for PostgreSQL."""
@@ -422,7 +380,7 @@ class Store:
     # ---------- items ----------
     def load_items(self, items: list[dict]) -> None:
         for it in items:
-            sql = """INSERT INTO pbc_items
+            sql = """INSERT INTO items
                    (item_id, category, priority, description, acceptance, expected_docs, status, updated_at)
                    VALUES (?,?,?,?,?,?, 'Not started', ?)"""
             if self._is_postgres:
@@ -442,10 +400,10 @@ class Store:
         self.conn.commit()
 
     def get_item(self, item_id: str) -> Optional[dict]:
-        return self.fetchone("SELECT * FROM pbc_items WHERE item_id=?", (item_id,))
+        return self.fetchone("SELECT * FROM items WHERE item_id=?", (item_id,))
 
     def all_items(self) -> list:
-        return self.fetchall("SELECT * FROM pbc_items ORDER BY item_id")
+        return self.fetchall("SELECT * FROM items ORDER BY item_id")
 
     def update_item_status(self, item_id: str, status: str, *, confidence: float | None = None,
                            rationale: str | None = None, doc_id: int | None = None,
@@ -456,7 +414,7 @@ class Store:
             raise ValueError(f"Unknown item {item_id!r}")
         if status in GUARDED_STATUSES:
             row = self.fetchone(
-                "SELECT id FROM pbc_verifications WHERE item_id=? AND (? IS NULL OR doc_id=?) "
+                "SELECT id FROM verifications WHERE item_id=? AND (? IS NULL OR doc_id=?) "
                 "ORDER BY ts DESC LIMIT 1",
                 (item_id, doc_id, doc_id),
             )
@@ -467,7 +425,7 @@ class Store:
                     + ". Call verify_item first."
                 )
         
-        sql = """UPDATE pbc_items SET status=?,
+        sql = """UPDATE items SET status=?,
                confidence=COALESCE(?, confidence),
                rationale=COALESCE(?, rationale),
                latest_doc_id=COALESCE(?, latest_doc_id),
@@ -490,7 +448,7 @@ class Store:
         if self.get_item(item_id) is None:
             raise ValueError(f"Unknown item {item_id!r}")
         
-        sql = "UPDATE pbc_items SET human_review=?, human_note=?, reviewed_at=? WHERE item_id=?"
+        sql = "UPDATE items SET human_review=?, human_note=?, reviewed_at=? WHERE item_id=?"
         if self._is_postgres:
             with self.conn.cursor() as cur:
                 cur.execute(self._q(sql), (review, note, time.time(), item_id))
@@ -508,7 +466,7 @@ class Store:
         
         try:
             return self.execute_returning(
-                "INSERT INTO pbc_users (username, password_hash, display_name, role, created_at) "
+                "INSERT INTO users (username, password_hash, display_name, role, created_at) "
                 "VALUES (?,?,?,?,?)",
                 (username.lower(), password_hash, display_name or username, role, time.time()),
                 "user_id"
@@ -522,18 +480,18 @@ class Store:
         import hashlib
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         return self.fetchone(
-            "SELECT * FROM pbc_users WHERE username=? AND password_hash=?",
+            "SELECT * FROM users WHERE username=? AND password_hash=?",
             (username.lower(), password_hash))
 
     def get_user(self, user_id: int) -> dict | None:
-        return self.fetchone("SELECT * FROM pbc_users WHERE user_id=?", (user_id,))
+        return self.fetchone("SELECT * FROM users WHERE user_id=?", (user_id,))
 
     def get_user_by_username(self, username: str) -> dict | None:
-        return self.fetchone("SELECT * FROM pbc_users WHERE username=?", (username.lower(),))
+        return self.fetchone("SELECT * FROM users WHERE username=?", (username.lower(),))
 
     def list_users(self) -> list[dict]:
         return self.fetchall(
-            "SELECT user_id, username, display_name, role, created_at FROM pbc_users ORDER BY username")
+            "SELECT user_id, username, display_name, role, created_at FROM users ORDER BY username")
 
     def set_user_review(self, item_id: str, user_id: int, review: str, note: str = "") -> None:
         if review not in ("Unreviewed", "Approved", "Rejected"):
@@ -544,14 +502,14 @@ class Store:
             raise ValueError(f"Unknown user {user_id!r}")
         
         if self._is_postgres:
-            sql = """INSERT INTO pbc_item_reviews (item_id, user_id, review, note, reviewed_at)
+            sql = """INSERT INTO item_reviews (item_id, user_id, review, note, reviewed_at)
                    VALUES (%s,%s,%s,%s,%s)
                    ON CONFLICT(item_id, user_id) DO UPDATE SET
                    review=EXCLUDED.review, note=EXCLUDED.note, reviewed_at=EXCLUDED.reviewed_at"""
             with self.conn.cursor() as cur:
                 cur.execute(sql, (item_id, user_id, review, note, time.time()))
         else:
-            sql = """INSERT INTO pbc_item_reviews (item_id, user_id, review, note, reviewed_at)
+            sql = """INSERT INTO item_reviews (item_id, user_id, review, note, reviewed_at)
                    VALUES (?,?,?,?,?)
                    ON CONFLICT(item_id, user_id) DO UPDATE SET
                    review=excluded.review, note=excluded.note, reviewed_at=excluded.reviewed_at"""
@@ -561,13 +519,13 @@ class Store:
     def get_item_reviews(self, item_id: str) -> list[dict]:
         return self.fetchall(
             """SELECT r.*, u.username, u.display_name, u.role
-               FROM pbc_item_reviews r JOIN pbc_users u ON r.user_id = u.user_id
+               FROM item_reviews r JOIN users u ON r.user_id = u.user_id
                WHERE r.item_id=? ORDER BY r.reviewed_at""",
             (item_id,))
 
     def get_user_reviews(self, user_id: int) -> list[dict]:
         return self.fetchall(
-            "SELECT * FROM pbc_item_reviews WHERE user_id=? ORDER BY reviewed_at DESC",
+            "SELECT * FROM item_reviews WHERE user_id=? ORDER BY reviewed_at DESC",
             (user_id,))
 
     def get_review_summary(self) -> dict:
@@ -606,19 +564,19 @@ class Store:
     def register_document(self, filename: str, path: str, sha256: str, email_id: str,
                           semantic_key: str, parent_doc_id: int | None = None) -> dict:
         dup = self.fetchone(
-            "SELECT doc_id, version FROM pbc_documents WHERE sha256=?", (sha256,))
+            "SELECT doc_id, version FROM documents WHERE sha256=?", (sha256,))
         if dup:
             return {"doc_id": dup["doc_id"], "version": dup["version"],
                     "supersedes": None, "duplicate": True}
         
         prev = self.fetchone(
-            "SELECT doc_id, version FROM pbc_documents WHERE semantic_key=? ORDER BY version DESC LIMIT 1",
+            "SELECT doc_id, version FROM documents WHERE semantic_key=? ORDER BY version DESC LIMIT 1",
             (semantic_key,))
         version = (prev["version"] + 1) if prev else 1
         supersedes = prev["doc_id"] if prev else None
         
         doc_id = self.execute_returning(
-            """INSERT INTO pbc_documents (filename, path, sha256, email_id, semantic_key,
+            """INSERT INTO documents (filename, path, sha256, email_id, semantic_key,
                                       version, supersedes, parent_doc_id, registered_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (filename, path, sha256, email_id, semantic_key, version, supersedes,
@@ -629,26 +587,26 @@ class Store:
                 "supersedes": supersedes, "duplicate": False}
 
     def get_document(self, doc_id: int) -> Optional[dict]:
-        return self.fetchone("SELECT * FROM pbc_documents WHERE doc_id=?", (doc_id,))
+        return self.fetchone("SELECT * FROM documents WHERE doc_id=?", (doc_id,))
 
     def lineage(self, doc_id: int) -> list:
         doc = self.get_document(doc_id)
         if doc is None:
             return []
         return self.fetchall(
-            "SELECT * FROM pbc_documents WHERE semantic_key=? ORDER BY version",
+            "SELECT * FROM documents WHERE semantic_key=? ORDER BY version",
             (doc["semantic_key"],))
 
     # ---------- episodes / trace ----------
     def start_episode(self, email_id: str, model: str, escalated_from: int | None = None) -> int:
         return self.execute_returning(
-            "INSERT INTO pbc_episodes (email_id, model, escalated_from, started_at) VALUES (?,?,?,?)",
+            "INSERT INTO episodes (email_id, model, escalated_from, started_at) VALUES (?,?,?,?)",
             (email_id, model, escalated_from, time.time()),
             "episode_id"
         )
 
     def end_episode(self, episode_id: int, summary: str = "") -> None:
-        sql = "UPDATE pbc_episodes SET ended_at=?, summary=? WHERE episode_id=?"
+        sql = "UPDATE episodes SET ended_at=?, summary=? WHERE episode_id=?"
         if self._is_postgres:
             with self.conn.cursor() as cur:
                 cur.execute(self._q(sql), (time.time(), summary, episode_id))
@@ -658,10 +616,10 @@ class Store:
 
     def add_trace(self, episode_id: int, kind: str, name: str, payload: Any) -> None:
         seq_row = self.fetchone(
-            "SELECT COALESCE(MAX(seq),0)+1 as seq FROM pbc_trace WHERE episode_id=?", (episode_id,))
+            "SELECT COALESCE(MAX(seq),0)+1 as seq FROM trace WHERE episode_id=?", (episode_id,))
         seq = seq_row["seq"] if isinstance(seq_row, dict) else seq_row[0]
         
-        sql = "INSERT INTO pbc_trace (episode_id, seq, kind, name, payload, ts) VALUES (?,?,?,?,?,?)"
+        sql = "INSERT INTO trace (episode_id, seq, kind, name, payload, ts) VALUES (?,?,?,?,?,?)"
         payload_str = payload if isinstance(payload, str) else json.dumps(payload, default=str)
         
         if self._is_postgres:
@@ -674,7 +632,7 @@ class Store:
     # ---------- verifications ----------
     def add_verification(self, item_id: str, doc_id: int, verdict: str, rationale: str,
                          criteria: Any, confidence: float, episode_id: int) -> None:
-        sql = """INSERT INTO pbc_verifications (item_id, doc_id, verdict, rationale, criteria,
+        sql = """INSERT INTO verifications (item_id, doc_id, verdict, rationale, criteria,
                                           confidence, episode_id, ts) VALUES (?,?,?,?,?,?,?,?)"""
         if self._is_postgres:
             with self.conn.cursor() as cur:
@@ -691,7 +649,7 @@ class Store:
     def add_api_call(self, episode_id: int | None, model: str, purpose: str,
                      input_tokens: int, output_tokens: int, cache_read: int,
                      cache_write: int, cost_usd: float) -> None:
-        sql = """INSERT INTO pbc_api_calls (episode_id, model, purpose, input_tokens, output_tokens,
+        sql = """INSERT INTO api_calls (episode_id, model, purpose, input_tokens, output_tokens,
                                       cache_read_tokens, cache_write_tokens, cost_usd, ts)
                VALUES (?,?,?,?,?,?,?,?,?)"""
         if self._is_postgres:
@@ -704,7 +662,7 @@ class Store:
         self.conn.commit()
 
     def total_cost(self) -> float:
-        row = self.fetchone("SELECT COALESCE(SUM(cost_usd),0) as total FROM pbc_api_calls")
+        row = self.fetchone("SELECT COALESCE(SUM(cost_usd),0) as total FROM api_calls")
         return row["total"] if isinstance(row, dict) else row[0]
 
     # ---------- misc ----------
@@ -714,7 +672,7 @@ class Store:
             {"filename": a.filename, "path": a.path, "sha256": a.sha256, "size": a.size}
             for a in (e.get("attachments") or [])
         ]
-        sql = """INSERT INTO pbc_emails (email_id, thread_id, from_addr, from_name,
+        sql = """INSERT INTO emails (email_id, thread_id, from_addr, from_name,
                to_addrs, subject, date, body, attachments, processed_at)
                VALUES (?,?,?,?,?,?,?,?,?,?)"""
         if self._is_postgres:
@@ -732,7 +690,7 @@ class Store:
 
     def add_clarification(self, item_id: str | None, question: str, recipient: str,
                           email_id: str, episode_id: int) -> None:
-        sql = ("INSERT INTO pbc_clarifications (item_id, question, recipient, email_id, episode_id, ts)"
+        sql = ("INSERT INTO clarifications (item_id, question, recipient, email_id, episode_id, ts)"
                " VALUES (?,?,?,?,?,?)")
         if self._is_postgres:
             with self.conn.cursor() as cur:
@@ -743,7 +701,7 @@ class Store:
 
     def add_draft(self, recipient: str, subject: str, body: str, item_ids: list[str]) -> int:
         return self.execute_returning(
-            "INSERT INTO pbc_drafts (recipient, subject, body, item_ids, created_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO drafts (recipient, subject, body, item_ids, created_at) VALUES (?,?,?,?,?)",
             (recipient, subject, body, json.dumps(item_ids), time.time()),
             "id"
         )
@@ -752,8 +710,8 @@ class Store:
         """Wipe run data for a fresh restart."""
         self._archive_current_run()
         
-        for table in ("pbc_items", "pbc_documents", "pbc_episodes", "pbc_trace", "pbc_verifications",
-                      "pbc_clarifications", "pbc_drafts", "pbc_api_calls", "pbc_emails", "pbc_item_reviews"):
+        for table in ("items", "documents", "episodes", "trace", "verifications",
+                      "clarifications", "drafts", "api_calls", "emails", "item_reviews"):
             if self._is_postgres:
                 with self.conn.cursor() as cur:
                     cur.execute(f"DELETE FROM {table}")
@@ -763,31 +721,31 @@ class Store:
         # Keep OCR cache
         if self._is_postgres:
             with self.conn.cursor() as cur:
-                cur.execute("DELETE FROM pbc_meta WHERE key NOT LIKE 'ocr:%'")
+                cur.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
         else:
-            self.conn.execute("DELETE FROM pbc_meta WHERE key NOT LIKE 'ocr:%'")
+            self.conn.execute("DELETE FROM meta WHERE key NOT LIKE 'ocr:%'")
         self.conn.commit()
 
     def _archive_current_run(self) -> int | None:
         """Archive current run data to run_history."""
-        count_row = self.fetchone("SELECT COUNT(*) as cnt FROM pbc_episodes")
+        count_row = self.fetchone("SELECT COUNT(*) as cnt FROM episodes")
         episode_count = count_row["cnt"] if isinstance(count_row, dict) else count_row[0]
         if episode_count == 0:
             return None
         
-        first_row = self.fetchone("SELECT MIN(started_at) as ts FROM pbc_episodes")
+        first_row = self.fetchone("SELECT MIN(started_at) as ts FROM episodes")
         first_episode = first_row["ts"] if isinstance(first_row, dict) else first_row[0]
         
-        last_row = self.fetchone("SELECT MAX(ended_at) as ts FROM pbc_episodes")
+        last_row = self.fetchone("SELECT MAX(ended_at) as ts FROM episodes")
         last_episode = last_row["ts"] if isinstance(last_row, dict) else last_row[0]
         
         status = self.get_meta("run_status") or "unknown"
         total_cost = self.total_cost()
         
-        email_row = self.fetchone("SELECT COUNT(*) as cnt FROM pbc_emails")
+        email_row = self.fetchone("SELECT COUNT(*) as cnt FROM emails")
         email_count = email_row["cnt"] if isinstance(email_row, dict) else email_row[0]
         
-        esc_row = self.fetchone("SELECT COUNT(*) as cnt FROM pbc_episodes WHERE escalated_from IS NOT NULL")
+        esc_row = self.fetchone("SELECT COUNT(*) as cnt FROM episodes WHERE escalated_from IS NOT NULL")
         escalation_count = esc_row["cnt"] if isinstance(esc_row, dict) else esc_row[0]
         
         summary = json.dumps({
@@ -798,30 +756,30 @@ class Store:
             "run_args": json.loads(self.get_meta("run_args") or "null"),
         })
         
-        items = self.fetchall("SELECT * FROM pbc_items")
+        items = self.fetchall("SELECT * FROM items")
         items_list = [dict(row) if not isinstance(row, dict) else row for row in items]
         
         episodes_data = []
-        for ep in self.fetchall("SELECT * FROM pbc_episodes ORDER BY episode_id"):
+        for ep in self.fetchall("SELECT * FROM episodes ORDER BY episode_id"):
             ep_dict = dict(ep) if not isinstance(ep, dict) else ep
             traces = self.fetchall(
-                "SELECT * FROM pbc_trace WHERE episode_id=? ORDER BY seq",
+                "SELECT * FROM trace WHERE episode_id=? ORDER BY seq",
                 (ep_dict["episode_id"],))
             ep_dict["traces"] = [dict(t) if not isinstance(t, dict) else t for t in traces]
             verifs = self.fetchall(
-                "SELECT * FROM pbc_verifications WHERE episode_id=?",
+                "SELECT * FROM verifications WHERE episode_id=?",
                 (ep_dict["episode_id"],))
             ep_dict["verifications"] = [dict(v) if not isinstance(v, dict) else v for v in verifs]
             episodes_data.append(ep_dict)
         
-        drafts = self.fetchall("SELECT * FROM pbc_drafts")
+        drafts = self.fetchall("SELECT * FROM drafts")
         drafts_list = [dict(d) if not isinstance(d, dict) else d for d in drafts]
         
-        api_calls = self.fetchall("SELECT * FROM pbc_api_calls")
+        api_calls = self.fetchall("SELECT * FROM api_calls")
         api_calls_list = [dict(c) if not isinstance(c, dict) else c for c in api_calls]
         
         return self.execute_returning(
-            """INSERT INTO pbc_run_history 
+            """INSERT INTO run_history 
                (started_at, ended_at, status, summary, items_snapshot, 
                 episodes_snapshot, drafts_snapshot, api_calls_snapshot)
                VALUES (?,?,?,?,?,?,?,?)""",
@@ -833,10 +791,10 @@ class Store:
 
     def get_run_history(self) -> list[dict]:
         return self.fetchall(
-            "SELECT run_id, started_at, ended_at, status, summary FROM pbc_run_history ORDER BY run_id DESC")
+            "SELECT run_id, started_at, ended_at, status, summary FROM run_history ORDER BY run_id DESC")
 
     def get_run_snapshot(self, run_id: int) -> dict | None:
-        row = self.fetchone("SELECT * FROM pbc_run_history WHERE run_id=?", (run_id,))
+        row = self.fetchone("SELECT * FROM run_history WHERE run_id=?", (run_id,))
         if not row:
             return None
         return {
@@ -854,10 +812,10 @@ class Store:
     def delete_run_history(self, run_id: int) -> bool:
         if self._is_postgres:
             with self.conn.cursor() as cur:
-                cur.execute("DELETE FROM pbc_run_history WHERE run_id=%s", (run_id,))
+                cur.execute("DELETE FROM run_history WHERE run_id=%s", (run_id,))
                 deleted = cur.rowcount > 0
         else:
-            cur = self.conn.execute("DELETE FROM pbc_run_history WHERE run_id=?", (run_id,))
+            cur = self.conn.execute("DELETE FROM run_history WHERE run_id=?", (run_id,))
             deleted = cur.rowcount > 0
         self.conn.commit()
         return deleted
@@ -866,15 +824,15 @@ class Store:
         if self._is_postgres:
             with self.conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO pbc_meta (key, value) VALUES (%s, %s) "
+                    "INSERT INTO meta (key, value) VALUES (%s, %s) "
                     "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
                     (key, value))
         else:
-            self.conn.execute("INSERT OR REPLACE INTO pbc_meta (key, value) VALUES (?,?)", (key, value))
+            self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
         self.conn.commit()
 
     def get_meta(self, key: str) -> str | None:
-        row = self.fetchone("SELECT value FROM pbc_meta WHERE key=?", (key,))
+        row = self.fetchone("SELECT value FROM meta WHERE key=?", (key,))
         if row is None:
             return None
         return row["value"] if isinstance(row, dict) else row[0]
