@@ -704,7 +704,7 @@ with tab_history:
         snapshot = store.get_run_snapshot(selected_run_id)
         if snapshot:
             summary = snapshot["summary"]
-            
+
             # Summary metrics
             st.subheader("Run summary")
             m1, m2, m3, m4 = st.columns(4)
@@ -742,16 +742,6 @@ with tab_history:
                         "Rationale": (it.get("rationale") or "")[:80],
                     } for it in items])
                     st.dataframe(df_items, width="stretch", hide_index=True)
-                    
-                    # Expandable detail for each item
-                    for it in items:
-                        with st.expander(f"{STATUS_COLORS.get(it['status'], '')} {it['item_id']} — {it['status']}"):
-                            st.write(it.get("description", ""))
-                            st.caption(f"Acceptance: {it.get('acceptance', '')}")
-                            if it.get("rationale"):
-                                st.info(it["rationale"])
-                            if it.get("human_note"):
-                                st.caption(f"Reviewer note: {it['human_note']}")
             
             with hist_tab_trace:
                 episodes = [e for e in snapshot.get("episodes", []) if e]
@@ -871,93 +861,6 @@ with tab_history:
                         st.dataframe(df_calls, width="stretch", hide_index=True)
 
 # ------------------------------------------------------------------ evals
-BENCH_BADGES = {
-    "idle": "⚪ idle", "launching": "🚀 launching…", "running": "🏃 running",
-    "finished": "✅ finished", "stopped": "⏹️ stopped",
-    "error": "🔥 error", "crashed": "💀 crashed",
-}
-
-
-def _bench_start() -> None:
-    st.session_state.pop("bm_error", None)
-    try:
-        runctl.bench_start(
-            store, int(st.session_state.bm_runs), st.session_state.bm_mailbox,
-            st.session_state.bm_pbc, st.session_state.bm_profile,
-            budget=st.session_state.bm_budget,
-            groundtruth=st.session_state.get("ev_gt", "input/sample/sample_groundtruth.json"),
-            labels=st.session_state.get("ev_labels", "evals/labels.json"),
-            api_key=(st.session_state.get("rc_api_key") or "").strip())
-    except RuntimeError as e:
-        st.session_state["bm_error"] = str(e)
-
-
-def _bench_stop() -> None:
-    runctl.bench_stop(store)
-
-
-@st.fragment(run_every=2)
-def benchmark_panel() -> None:
-    bs = runctl.bench_state(store)
-    status = bs["status"]
-    st.markdown(f"**Benchmark:** {BENCH_BADGES.get(status, status)}")
-    prog = bs["progress"]
-    if status in ("launching", "running") and prog.get("total"):
-        st.progress(min(prog.get("done", 0) / prog["total"], 1.0),
-                    text=f"{prog.get('done', 0)}/{prog['total']} runs complete")
-        run = bs.get("run") or {}
-        if run.get("total"):
-            st.caption(f"current run: email {run.get('done', 0)}/{run['total']} · "
-                       f"{(run.get('current') or '')[:38]} · "
-                       f"${run.get('cost_usd', 0):.4f} so far")
-    if status == "error" and bs["error"]:
-        st.error(bs["error"])
-    if status == "crashed":
-        st.warning("Benchmark process died — see data/benchmark.log")
-
-    if status in ("launching", "running"):
-        st.button("⏹ Stop benchmark", key="bm_stop", on_click=_bench_stop)
-        st.caption("Stop takes effect after the in-flight run finishes.")
-    else:
-        with st.expander("Benchmark inputs", expanded=False):
-            st.number_input("sample runs", min_value=1, max_value=20, value=3,
-                            step=1, key="bm_runs")
-            st.text_input("mailbox", "input/sample/sample_mailbox.mbox", key="bm_mailbox")
-            st.text_input("PBC list", "input/PBC_List_FY2026.pdf", key="bm_pbc")
-            st.text_input("client profile", "input/Client_Profile.pdf", key="bm_profile")
-            st.number_input("budget $ per run", value=2.0, min_value=0.1, step=0.5,
-                            key="bm_budget")
-        st.button("🏁 Run benchmark", key="bm_start", type="primary",
-                  on_click=_bench_start)
-        st.caption("Each run is a fresh agent pass over the mailbox on a scratch DB "
-                   "(data/benchmark.db) — the live tracker is untouched, and every "
-                   "run is real API spend. Uses the ground truth / labels paths "
-                   "above and the API key from the sidebar (or the environment).")
-        if st.session_state.get("bm_error"):
-            st.error(st.session_state["bm_error"])
-
-    if bs["results"]:
-        st.dataframe(pd.DataFrame([
-            {"Run": r["run"], "Status acc": f"{r['status_accuracy']:.0%}",
-             "Insuff. F1": round(r["insufficiency_f1"], 2),
-             "Tool seq": f"{r['sequence_match']:.0%}",
-             "Cost $": round(r["cost_usd"], 4),
-             "API calls": r["api_calls"], "Escalations": r["escalations"]}
-            for r in bs["results"]]), width="stretch", hide_index=True)
-    if bs["summary"]:
-        sm = bs["summary"]
-        a1, a2, a3, a4 = st.columns(4)
-        a1.metric("Status accuracy", f"{sm['status_accuracy']['mean']:.0%}",
-                  f"± {sm['status_accuracy']['stdev']:.0%}", delta_color="off")
-        a2.metric("Insufficiency F1", f"{sm['insufficiency_f1']['mean']:.2f}",
-                  f"± {sm['insufficiency_f1']['stdev']:.2f}", delta_color="off")
-        a3.metric("Tool-seq match", f"{sm['sequence_match']['mean']:.0%}",
-                  f"± {sm['sequence_match']['stdev']:.0%}", delta_color="off")
-        a4.metric("Cost / run", f"${sm['cost_usd']['mean']:.4f}",
-                  f"± ${sm['cost_usd']['stdev']:.4f}", delta_color="off")
-        st.caption(f"Mean ± stdev over {len(bs['results'])} run(s).")
-
-
 with tab_evals:
     from evals.run_evals import evaluate
 
@@ -965,8 +868,9 @@ with tab_evals:
     gt_path = c1.text_input("Ground truth", "input/sample/sample_groundtruth.json",
                             key="ev_gt")
     labels_path = c2.text_input("Labels", "evals/labels.json", key="ev_labels")
-    st.caption("Evals are pure DB reads — no LLM calls, safe to run any time "
-               "(mid-run results reflect emails processed so far).")
+    st.caption("Scores against an explicit ground-truth file (sample set only — "
+               "hold-out has none). Pure DB reads, no LLM calls; mid-run results "
+               "reflect emails processed so far.")
 
     if st.button("▶ Run evals", type="primary"):
         try:
@@ -1042,7 +946,3 @@ with tab_evals:
         st.dataframe(pd.DataFrame([
             {"Model": m["model"], "Calls": m["n"], "USD": round(m["c"], 4)}
             for m in c["by_model"]]), width="stretch", hide_index=True)
-
-    st.divider()
-    st.subheader("Benchmark — repeated sample runs")
-    benchmark_panel()

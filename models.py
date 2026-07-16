@@ -50,7 +50,7 @@ def compat_kwargs(model: str, kwargs: dict) -> dict:
     - Drop temperature / top_p / top_k (rejected even at "default" when sent).
     - Disable thinking when tool_choice forces a tool (adaptive thinking is on by
       default on these models; forced tool use is incompatible with it). This is
-      what crashed the benchmark on escalate → first Sonnet turn (forced submit_plan).
+      what crashed escalate → first Sonnet turn (forced submit_plan).
     - Rewrite legacy thinking.type=enabled (removed on Sonnet 5 / Opus 4.8).
     """
     out = dict(kwargs)

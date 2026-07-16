@@ -513,13 +513,17 @@ class Store:
         email_count = self.conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
         escalation_count = self.conn.execute(
             "SELECT COUNT(*) FROM episodes WHERE escalated_from IS NOT NULL").fetchone()[0]
-        summary = json.dumps({
+        summary_data: dict = {
             "total_emails": email_count,
             "total_episodes": episode_count,
             "total_cost_usd": total_cost,
             "escalations": escalation_count,
             "run_args": json.loads(self.get_meta("run_args") or "null"),
-        })
+        }
+        # Do not bake status_accuracy into the archive: hold-out mailboxes have
+        # no ground truth, and sample GT would silently mis-score them. Use the
+        # Evals tab (with an explicit ground-truth path) when you want accuracy.
+        summary = json.dumps(summary_data)
         
         # Snapshot items
         items = [{k: row[k] for k in row.keys()}

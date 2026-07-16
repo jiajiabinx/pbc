@@ -42,20 +42,20 @@ def prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
     return p, r, f
 
 
-def evaluate(db: str = "data/pbc.db",
-             groundtruth: str = "input/sample/sample_groundtruth.json",
-             labels_path: str = "evals/labels.json") -> dict:
-    """Score a run. Returns a plain dict (JSON-safe) for CLI or UI rendering.
+def score_status(predicted: dict[str, str],
+                 groundtruth: str = "input/sample/sample_groundtruth.json",
+                 labels_path: str = "evals/labels.json") -> dict | None:
+    """Score item statuses against ground truth. ``predicted`` maps item_id → status.
 
-    ``db`` is a SQLite path or a postgresql:// URL (see db.connect)."""
-    conn = db_connect(db)
-    gt = json.loads(Path(groundtruth).read_text())["expected_status"]
-    labels = json.loads(Path(labels_path).read_text())
-    equiv = labels.get("status_equivalences", {})
-
-    # ---------------- status scoring ----------------
-    predicted = {r["item_id"]: normalize(r["status"], equiv)
-                 for r in conn.execute("SELECT item_id, status FROM items")}
+    Returns None if ground-truth / labels files are missing. Otherwise a dict with
+    correct, total, accuracy, classes, mismatches — same shape as evaluate()["status"].
+    """
+    gt_path, lab_path = Path(groundtruth), Path(labels_path)
+    if not gt_path.exists() or not lab_path.exists():
+        return None
+    gt = json.loads(gt_path.read_text())["expected_status"]
+    equiv = json.loads(lab_path.read_text()).get("status_equivalences", {})
+    predicted = {k: normalize(v, equiv) for k, v in predicted.items()}
     expected = {k: v["status"] for k, v in gt.items()}
 
     per_class: dict[str, Counter] = defaultdict(Counter)
@@ -77,13 +77,40 @@ def evaluate(db: str = "data/pbc.db",
         p, r, f = prf(c["tp"], c["fp"], c["fn"])
         classes[cls] = {"precision": p, "recall": r, "f1": f,
                         "support": c["tp"] + c["fn"]}
+    total = len(expected)
+    return {
+        "correct": correct, "total": total,
+        "accuracy": (correct / total) if total else 0.0,
+        "classes": classes, "mismatches": mismatches,
+    }
 
+
+def evaluate(db: str = "data/pbc.db",
+             groundtruth: str = "input/sample/sample_groundtruth.json",
+             labels_path: str = "evals/labels.json") -> dict:
+    """Score a run. Returns a plain dict (JSON-safe) for CLI or UI rendering.
+
+    ``db`` is a SQLite path or a postgresql:// URL (see db.connect)."""
+    conn = db_connect(db)
+    labels = json.loads(Path(labels_path).read_text())
+
+    # ---------------- status scoring ----------------
+    predicted = {r["item_id"]: r["status"]
+                 for r in conn.execute("SELECT item_id, status FROM items")}
+    status = score_status(predicted, groundtruth, labels_path)
+    if status is None:
+        raise FileNotFoundError(groundtruth)
+
+    expected = {k: v["status"] for k, v in
+                json.loads(Path(groundtruth).read_text())["expected_status"].items()}
+    pred_norm = {k: normalize(v, labels.get("status_equivalences", {}))
+                 for k, v in predicted.items()}
     tp = sum(1 for k in expected
-             if expected[k] == "Insufficient" and predicted.get(k) == "Insufficient")
+             if expected[k] == "Insufficient" and pred_norm.get(k) == "Insufficient")
     fp = sum(1 for k in expected
-             if expected[k] != "Insufficient" and predicted.get(k) == "Insufficient")
+             if expected[k] != "Insufficient" and pred_norm.get(k) == "Insufficient")
     fn = sum(1 for k in expected
-             if expected[k] == "Insufficient" and predicted.get(k) != "Insufficient")
+             if expected[k] == "Insufficient" and pred_norm.get(k) != "Insufficient")
     ip, ir, if1 = prf(tp, fp, fn)
 
     # ---------------- tool-sequence scoring ----------------
@@ -123,8 +150,8 @@ def evaluate(db: str = "data/pbc.db",
 
     conn.close()
     return {
-        "status": {"correct": correct, "total": len(expected), "classes": classes,
-                   "mismatches": mismatches},
+        "status": {k: status[k] for k in
+                   ("correct", "total", "classes", "mismatches")},
         "insufficiency": {"precision": ip, "recall": ir, "f1": if1,
                           "tp": tp, "fp": fp, "fn": fn},
         "sequences": {"matched": matched, "total": len(sequences), "rows": sequences},

@@ -23,10 +23,9 @@ RUN pip install -r requirements-prod.txt
 
 COPY . .
 
-# data/ holds the run log, benchmark scratch DB, and saved attachments. On
-# Railway's ephemeral filesystem these don't survive redeploys — mount a volume
-# at /app/data if you need attachment files to persist (tracker state lives in
-# Postgres regardless).
+# data/ holds the run log and saved attachments. On Railway's ephemeral
+# filesystem these don't survive redeploys — mount a volume at /app/data if you
+# need attachment files to persist (tracker state lives in Postgres regardless).
 RUN mkdir -p data
 
 EXPOSE 8501
