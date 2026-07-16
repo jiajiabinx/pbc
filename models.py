@@ -35,6 +35,38 @@ class BudgetExceeded(Exception):
     pass
 
 
+# Sonnet 5 / Opus 4.7+ reject non-default sampling params (400) and run adaptive
+# thinking by default. Forced tool_choice is incompatible with thinking.
+_NO_SAMPLING_PREFIXES = ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8")
+
+
+def rejects_sampling(model: str) -> bool:
+    return model.startswith(_NO_SAMPLING_PREFIXES)
+
+
+def compat_kwargs(model: str, kwargs: dict) -> dict:
+    """Rewrite request kwargs so Sonnet 5 / Opus 4.7+ calls don't 400.
+
+    - Drop temperature / top_p / top_k (rejected even at "default" when sent).
+    - Disable thinking when tool_choice forces a tool (adaptive thinking is on by
+      default on these models; forced tool use is incompatible with it). This is
+      what crashed the benchmark on escalate → first Sonnet turn (forced submit_plan).
+    - Rewrite legacy thinking.type=enabled (removed on Sonnet 5 / Opus 4.8).
+    """
+    out = dict(kwargs)
+    if not rejects_sampling(model):
+        return out
+    for key in ("temperature", "top_p", "top_k"):
+        out.pop(key, None)
+    tc = out.get("tool_choice")
+    if isinstance(tc, dict) and tc.get("type") in ("tool", "any"):
+        out["thinking"] = {"type": "disabled"}
+    thinking = out.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+        out["thinking"] = {"type": "disabled"}
+    return out
+
+
 def call_cost(model: str, usage) -> float:
     inp, out = PRICES[model]
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -64,6 +96,7 @@ class Router:
         if self.spent() >= self.budget:
             raise BudgetExceeded(
                 f"Budget cap ${self.budget:.2f} reached (spent ${self.spent():.4f})")
+        kwargs = compat_kwargs(model, kwargs)
         response = self.client.messages.create(model=model, max_tokens=max_tokens, **kwargs)
         usage = response.usage
         cost = call_cost(model, usage)
