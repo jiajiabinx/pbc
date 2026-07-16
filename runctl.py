@@ -24,6 +24,33 @@ import db
 LOG_PATH = "data/run.log"
 
 
+def _proc_state(pid: int) -> str | None:
+    """Return the process state letter (R/S/Z/…) or None if the pid is gone.
+
+    Prefer /proc (always present in Linux containers; the slim image has no
+    `ps`). Fall back to `ps` on macOS/dev where /proc does not exist.
+    """
+    try:
+        # /proc/<pid>/stat field 3 is the state; field 2 is "(comm)" and may
+        # contain spaces, so take the char after the last ')'.
+        with open(f"/proc/{pid}/stat") as f:
+            body = f.read()
+        return body.rsplit(")", 1)[-1].split()[0]
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        return out[0] if out else None
+    except FileNotFoundError:
+        # No /proc and no ps (rare) — caller already confirmed kill(0) worked.
+        return "?"
+
+
 def _pid_alive(pid: str | None) -> bool:
     if not pid:
         return False
@@ -46,9 +73,8 @@ def _pid_alive(pid: str | None) -> bool:
     # os.kill(pid, 0) also succeeds for zombies we can't reap (the runner was
     # spawned by a previous UI process that still exists) — check the process
     # state instead of trusting the signal probe.
-    stat = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
-                          capture_output=True, text=True).stdout.strip()
-    return bool(stat) and not stat.startswith("Z")
+    state = _proc_state(pid)
+    return state is not None and not state.startswith("Z")
 
 
 def state(store) -> dict:
