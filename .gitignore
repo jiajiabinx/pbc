@@ -3,3 +3,9 @@ data/
 __pycache__/
 *.pyc
 .DS_Store
+# Secrets — keep local .env out of git (commit .env.example instead).
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite

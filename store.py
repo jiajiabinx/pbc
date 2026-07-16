@@ -1,4 +1,8 @@
-"""SQLite persistence: tracker rows, document lineage, full agent traces, cost ledger.
+"""Persistence: tracker rows, document lineage, full agent traces, cost ledger.
+
+Runs on SQLite locally / in tests and on Postgres in production, chosen by the
+connection string passed to Store (see db.py). On Postgres every table is
+prefixed (``pbc_``) so the app can share an instance with other apps.
 
 The status guard lives here, in code, not in a prompt: no item may move to
 Received / Insufficient / Complete without a verifier verdict recorded for that
@@ -10,6 +14,8 @@ import json
 import sqlite3
 import time
 from typing import Any, Optional
+
+import db
 
 STATUSES = ("Not started", "Requested", "Under review", "Received", "Insufficient", "Complete")
 # Statuses that require an independent verifier verdict on file.
@@ -109,6 +115,18 @@ CREATE TABLE IF NOT EXISTS run_history (
 """
 
 
+def _render_schema(backend: str) -> str:
+    """The schema above is written in SQLite dialect; translate the two bits
+    Postgres needs: autoincrement PKs and 8-byte floats (epoch timestamps lose
+    precision in Postgres' 4-byte REAL). Table names stay bare here and are
+    prefixed centrally in db.executescript."""
+    if backend == "pg":
+        return (_SCHEMA
+                .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+                .replace(" REAL", " DOUBLE PRECISION"))
+    return _SCHEMA
+
+
 class StatusGuardError(Exception):
     """Raised when a status change lacks the required verifier verdict."""
 
@@ -116,14 +134,11 @@ class StatusGuardError(Exception):
 class Store:
     def __init__(self, db_path: str = "data/pbc.db"):
         self.db_path = db_path
-        # check_same_thread=False: Streamlit caches Store across script reruns
-        # that execute on different threads (@st.cache_resource).
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        # Two processes share this DB (the agent runner and the Streamlit UI).
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.executescript(_SCHEMA)
+        # Backend picked from the connection string: a postgresql:// URL uses
+        # Postgres, anything else is a SQLite file (see db.py). Tables are
+        # transparently prefixed so a shared Postgres instance stays clash-free.
+        self.conn = db.connect(db_path)
+        self.conn.executescript(_render_schema(self.conn.backend))
         # migrate pre-existing DBs created before later columns were added
         for stmt in (
             "ALTER TABLE emails ADD COLUMN attachments TEXT",
@@ -133,7 +148,7 @@ class Store:
         ):
             try:
                 self.conn.execute(stmt)
-            except sqlite3.OperationalError:
+            except db.Error:
                 pass
         self.conn.commit()
 
@@ -141,9 +156,10 @@ class Store:
     def load_items(self, items: list[dict]) -> None:
         for it in items:
             self.conn.execute(
-                """INSERT OR IGNORE INTO items
+                """INSERT INTO items
                    (item_id, category, priority, description, acceptance, expected_docs, status, updated_at)
-                   VALUES (?,?,?,?,?,?, 'Not started', ?)""",
+                   VALUES (?,?,?,?,?,?, 'Not started', ?)
+                   ON CONFLICT(item_id) DO NOTHING""",
                 (it["item_id"], it.get("category"), it.get("priority"), it.get("description"),
                  it.get("acceptance"), it.get("expected_docs"), time.time()),
             )
@@ -163,11 +179,19 @@ class Store:
         if self.get_item(item_id) is None:
             raise ValueError(f"Unknown item {item_id!r}")
         if status in GUARDED_STATUSES:
-            row = self.conn.execute(
-                "SELECT id FROM verifications WHERE item_id=? AND (? IS NULL OR doc_id=?) "
-                "ORDER BY ts DESC LIMIT 1",
-                (item_id, doc_id, doc_id),
-            ).fetchone()
+            # Branch in Python rather than `(? IS NULL OR doc_id=?)`: Postgres
+            # can't infer the type of a bare NULL parameter (IndeterminateDatatype).
+            if doc_id is None:
+                row = self.conn.execute(
+                    "SELECT id FROM verifications WHERE item_id=? ORDER BY ts DESC LIMIT 1",
+                    (item_id,),
+                ).fetchone()
+            else:
+                row = self.conn.execute(
+                    "SELECT id FROM verifications WHERE item_id=? AND doc_id=? "
+                    "ORDER BY ts DESC LIMIT 1",
+                    (item_id, doc_id),
+                ).fetchone()
             if row is None:
                 raise StatusGuardError(
                     f"Refusing to set {item_id} to {status!r}: no verify_item verdict on record"
@@ -206,13 +230,14 @@ class Store:
             raise ValueError(f"Unknown role {role!r}")
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         try:
-            cur = self.conn.execute(
+            user_id = self.conn.execute_returning(
                 "INSERT INTO users (username, password_hash, display_name, role, created_at) "
                 "VALUES (?,?,?,?,?)",
-                (username.lower(), password_hash, display_name or username, role, time.time()))
+                (username.lower(), password_hash, display_name or username, role, time.time()),
+                column="user_id")
             self.conn.commit()
-            return cur.lastrowid
-        except sqlite3.IntegrityError:
+            return user_id
+        except db.IntegrityError:
             raise ValueError(f"Username {username!r} already exists")
 
     def authenticate_user(self, username: str, password: str) -> dict | None:
@@ -329,15 +354,16 @@ class Store:
         ).fetchone()
         version = (prev["version"] + 1) if prev else 1
         supersedes = prev["doc_id"] if prev else None
-        cur = self.conn.execute(
+        doc_id = self.conn.execute_returning(
             """INSERT INTO documents (filename, path, sha256, email_id, semantic_key,
                                       version, supersedes, parent_doc_id, registered_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (filename, path, sha256, email_id, semantic_key, version, supersedes,
              parent_doc_id, time.time()),
+            column="doc_id",
         )
         self.conn.commit()
-        return {"doc_id": cur.lastrowid, "version": version,
+        return {"doc_id": doc_id, "version": version,
                 "supersedes": supersedes, "duplicate": False}
 
     def get_document(self, doc_id: int) -> Optional[sqlite3.Row]:
@@ -353,12 +379,13 @@ class Store:
 
     # ---------- episodes / trace ----------
     def start_episode(self, email_id: str, model: str, escalated_from: int | None = None) -> int:
-        cur = self.conn.execute(
+        episode_id = self.conn.execute_returning(
             "INSERT INTO episodes (email_id, model, escalated_from, started_at) VALUES (?,?,?,?)",
             (email_id, model, escalated_from, time.time()),
+            column="episode_id",
         )
         self.conn.commit()
-        return cur.lastrowid
+        return episode_id
 
     def end_episode(self, episode_id: int, summary: str = "") -> None:
         self.conn.execute("UPDATE episodes SET ended_at=?, summary=? WHERE episode_id=?",
@@ -406,19 +433,30 @@ class Store:
 
     # ---------- misc ----------
     def add_email(self, e: dict) -> None:
+        """Record an email as *seen* (processed_at stays NULL until its episode
+        finishes). The resume filter keys off processed_at, so a crash or stop
+        mid-episode leaves the email in the queue instead of silently skipping
+        it on the next run. Call mark_email_processed once the episode completes."""
         atts = [
             a if isinstance(a, dict) else
             {"filename": a.filename, "path": a.path, "sha256": a.sha256, "size": a.size}
             for a in (e.get("attachments") or [])
         ]
         self.conn.execute(
-            """INSERT OR IGNORE INTO emails (email_id, thread_id, from_addr, from_name,
+            """INSERT INTO emails (email_id, thread_id, from_addr, from_name,
                to_addrs, subject, date, body, attachments, processed_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?, NULL)
+               ON CONFLICT(email_id) DO NOTHING""",
             (e["email_id"], e["thread_id"], e["from_addr"], e["from_name"],
              json.dumps(e["to_addrs"]), e["subject"], e["date"], e["body"],
-             json.dumps(atts), time.time()),
+             json.dumps(atts)),
         )
+        self.conn.commit()
+
+    def mark_email_processed(self, email_id: str) -> None:
+        """Stamp processed_at now that the email's episode has run to completion."""
+        self.conn.execute(
+            "UPDATE emails SET processed_at=? WHERE email_id=?", (time.time(), email_id))
         self.conn.commit()
 
     def add_clarification(self, item_id: str | None, question: str, recipient: str,
@@ -431,12 +469,13 @@ class Store:
         self.conn.commit()
 
     def add_draft(self, recipient: str, subject: str, body: str, item_ids: list[str]) -> int:
-        cur = self.conn.execute(
+        draft_id = self.conn.execute_returning(
             "INSERT INTO drafts (recipient, subject, body, item_ids, created_at) VALUES (?,?,?,?,?)",
             (recipient, subject, body, json.dumps(item_ids), time.time()),
+            column="id",
         )
         self.conn.commit()
-        return cur.lastrowid
+        return draft_id
 
     def reset_all(self) -> None:
         """Wipe run data for a fresh restart, in place (keeps the file/inode so an
@@ -512,17 +551,18 @@ class Store:
                      for c in self.conn.execute("SELECT * FROM api_calls").fetchall()]
         
         # Insert into run_history
-        cur = self.conn.execute(
+        run_id = self.conn.execute_returning(
             """INSERT INTO run_history 
                (started_at, ended_at, status, summary, items_snapshot, 
                 episodes_snapshot, drafts_snapshot, api_calls_snapshot)
                VALUES (?,?,?,?,?,?,?,?)""",
             (first_episode, last_episode or time.time(), status, summary,
              json.dumps(items), json.dumps(episodes_data),
-             json.dumps(drafts), json.dumps(api_calls))
+             json.dumps(drafts), json.dumps(api_calls)),
+            column="run_id",
         )
         self.conn.commit()
-        return cur.lastrowid
+        return run_id
 
     def get_run_history(self) -> list[dict]:
         """Get list of archived runs (metadata only, not full snapshots)."""
@@ -556,7 +596,9 @@ class Store:
         return cur.rowcount > 0
 
     def set_meta(self, key: str, value: str) -> None:
-        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         self.conn.commit()
 
     def get_meta(self, key: str) -> str | None:

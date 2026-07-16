@@ -12,7 +12,17 @@ import os
 import sys
 from pathlib import Path
 
+# When launched via runctl, stdout/stderr are redirected to a log file and the
+# locale may default to ASCII, so any non-ASCII output (em-dashes, tracebacks)
+# would raise UnicodeEncodeError. Force UTF-8 to keep the log write-safe.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 import agent
+import db
 import drafts as drafts_mod
 import embeddings
 import ingest
@@ -58,7 +68,8 @@ def main() -> int:
     ap.add_argument("--mailbox", required=True, help=".mbox file or directory of .eml files")
     ap.add_argument("--pbc", required=True, help="PBC list PDF (the engagement config)")
     ap.add_argument("--profile", required=True, help="Client profile PDF")
-    ap.add_argument("--db", default="data/pbc.db")
+    ap.add_argument("--db", default=os.environ.get("DATABASE_URL") or "data/pbc.db",
+                    help="SQLite path or a postgresql:// URL (defaults to $DATABASE_URL)")
     ap.add_argument("--budget", type=float, default=2.00, help="hard USD cap per run")
     ap.add_argument("--fresh", action="store_true", help="delete the DB and start over")
     ap.add_argument("--no-drafts", action="store_true", help="skip follow-up drafting")
@@ -68,9 +79,13 @@ def main() -> int:
         print("ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) is not set.", file=sys.stderr)
         return 2
 
-    if args.fresh and Path(args.db).exists():
-        Path(args.db).unlink()
-    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    if db.is_pg(args.db):
+        if args.fresh:
+            Store(args.db).reset_all()  # can't unlink a Postgres DB; wipe run data
+    else:
+        if args.fresh and Path(args.db).exists():
+            Path(args.db).unlink()
+        Path(args.db).parent.mkdir(parents=True, exist_ok=True)
 
     store = Store(args.db)
     router = models.Router(store, budget_usd=args.budget)

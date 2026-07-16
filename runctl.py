@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import db
+
 LOG_PATH = "data/run.log"
 
 
@@ -90,8 +92,15 @@ def start(store, mailbox: str, pbc: str, profile: str, *,
     store.set_meta("run_error", "")
     store.set_meta("run_progress", "{}")
     cmd = [sys.executable, "run.py", "--mailbox", mailbox, "--pbc", pbc,
-           "--profile", profile, "--db", store.db_path, "--budget", str(budget)]
+           "--profile", profile, "--budget", str(budget)]
+    if db.is_pg(store.db_path):
+        # Pass Postgres via env so the connection URL (with credentials) never
+        # shows up in `ps`/the process table; run.py reads $DATABASE_URL.
+        env["DATABASE_URL"] = store.db_path
+    else:
+        cmd += ["--db", store.db_path]
     env["PYTHONUNBUFFERED"] = "1"  # keep the log tail-able mid-run
+    env["PYTHONIOENCODING"] = "utf-8"  # log is written under our redirect, not a tty
     root = Path(__file__).resolve().parent
     (root / "data").mkdir(exist_ok=True)
     with open(root / LOG_PATH, "ab") as log:
@@ -123,10 +132,13 @@ def bench_state(store) -> dict:
         try:
             path = Path(__file__).resolve().parent / scratch
             conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-            row = conn.execute("SELECT value FROM meta WHERE key='run_progress'").fetchone()
+            # The scratch DB is always SQLite, but its tables carry the same
+            # prefix the Store applies, so read them by the prefixed names.
+            row = conn.execute(
+                f"SELECT value FROM {db.PREFIX}meta WHERE key='run_progress'").fetchone()
             run = json.loads(row[0]) if row else {}
             run["cost_usd"] = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd),0) FROM api_calls").fetchone()[0]
+                f"SELECT COALESCE(SUM(cost_usd),0) FROM {db.PREFIX}api_calls").fetchone()[0]
             conn.close()
         except sqlite3.Error:
             run = {}
@@ -167,8 +179,13 @@ def bench_start(store, runs: int, mailbox: str, pbc: str, profile: str, *,
     cmd = [sys.executable, "evals/benchmark.py", "--runs", str(runs),
            "--mailbox", mailbox, "--pbc", pbc, "--profile", profile,
            "--budget", str(budget), "--groundtruth", groundtruth,
-           "--labels", labels, "--report-db", store.db_path]
+           "--labels", labels]
+    if db.is_pg(store.db_path):
+        env["DATABASE_URL"] = store.db_path  # report-db comes from env (keeps URL out of `ps`)
+    else:
+        cmd += ["--report-db", store.db_path]
     env["PYTHONUNBUFFERED"] = "1"  # keep the log tail-able mid-run
+    env["PYTHONIOENCODING"] = "utf-8"  # log is written under our redirect, not a tty
     root = Path(__file__).resolve().parent
     (root / "data").mkdir(exist_ok=True)
     with open(root / BENCH_LOG, "ab") as log:

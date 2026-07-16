@@ -11,6 +11,16 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+# Force UTF-8 stdio: Streamlit renders tracebacks with box-drawing chars (│ ─),
+# and this file uses em-dashes. If the process locale is ASCII (common when
+# stdout is redirected or launched from a minimal env), those writes raise
+# UnicodeEncodeError. Reconfiguring here makes console output encoding-safe.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 import pandas as pd
 import streamlit as st
 
@@ -18,7 +28,7 @@ import runctl
 import versioning
 from store import Store
 
-DB = "data/pbc.db"
+DB = os.environ.get("DATABASE_URL") or "data/pbc.db"
 if "--db" in sys.argv:
     DB = sys.argv[sys.argv.index("--db") + 1]
 
@@ -615,10 +625,13 @@ with tab_trace:
                         st.caption(f"💬 {payload}")
 
                 with st.expander("Per-call cost detail"):
-                    df = pd.read_sql_query(
+                    # Build the frame via the store wrapper so it works on both
+                    # SQLite and Postgres (pd.read_sql_query needs a raw DBAPI
+                    # conn + matching paramstyle, which the wrapper abstracts).
+                    df = pd.DataFrame([dict(r) for r in store.conn.execute(
                         "SELECT model, purpose, input_tokens, output_tokens, cache_read_tokens,"
                         " cache_write_tokens, cost_usd FROM api_calls WHERE episode_id=?",
-                        store.conn, params=(eid,))
+                        (eid,)).fetchall()])
                     st.dataframe(df, width="stretch", hide_index=True)
 
 # ------------------------------------------------------------------ drafts
@@ -736,13 +749,13 @@ with tab_history:
                                 st.caption(f"Reviewer note: {it['human_note']}")
             
             with hist_tab_trace:
-                episodes = snapshot.get("episodes", [])
+                episodes = [e for e in snapshot.get("episodes", []) if e]
                 if not episodes:
                     st.info("No episodes in this run.")
                 else:
                     # Episode selector
                     ep_options = {
-                        f"Episode #{ep['episode_id']} — {ep['model']} — {ep.get('summary', '')[:50]}"
+                        f"Episode #{ep.get('episode_id', '?')} — {ep.get('model', '?')} — {(ep.get('summary') or '')[:50]}"
                         + (f" (escalated from #{ep['escalated_from']})" if ep.get('escalated_from') else ""): i
                         for i, ep in enumerate(episodes)
                     }
@@ -751,8 +764,8 @@ with tab_history:
                     ep_idx = ep_options[selected_ep_label]
                     ep = episodes[ep_idx]
                     
-                    st.markdown(f"**Email ID:** `{ep['email_id']}`")
-                    st.markdown(f"**Model:** {ep['model']}")
+                    st.markdown(f"**Email ID:** `{ep.get('email_id', '?')}`")
+                    st.markdown(f"**Model:** {ep.get('model', '?')}")
                     if ep.get("summary"):
                         st.success(f"Outcome: {ep['summary']}")
                     

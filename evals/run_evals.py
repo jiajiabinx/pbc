@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
+import os
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from db import connect as db_connect  # noqa: E402  (needs the path insert above)
 
 
 def normalize(status: str, equivalences: dict) -> str:
@@ -43,9 +45,10 @@ def prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
 def evaluate(db: str = "data/pbc.db",
              groundtruth: str = "input/sample/sample_groundtruth.json",
              labels_path: str = "evals/labels.json") -> dict:
-    """Score a run. Returns a plain dict (JSON-safe) for CLI or UI rendering."""
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
+    """Score a run. Returns a plain dict (JSON-safe) for CLI or UI rendering.
+
+    ``db`` is a SQLite path or a postgresql:// URL (see db.connect)."""
+    conn = db_connect(db)
     gt = json.loads(Path(groundtruth).read_text())["expected_status"]
     labels = json.loads(Path(labels_path).read_text())
     equiv = labels.get("status_equivalences", {})
@@ -118,6 +121,7 @@ def evaluate(db: str = "data/pbc.db",
     escalations = conn.execute(
         "SELECT COUNT(*) FROM episodes WHERE escalated_from IS NOT NULL").fetchone()[0]
 
+    conn.close()
     return {
         "status": {"correct": correct, "total": len(expected), "classes": classes,
                    "mismatches": mismatches},
@@ -131,7 +135,7 @@ def evaluate(db: str = "data/pbc.db",
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="data/pbc.db")
+    ap.add_argument("--db", default=os.environ.get("DATABASE_URL") or "data/pbc.db")
     ap.add_argument("--groundtruth", default="input/sample/sample_groundtruth.json")
     ap.add_argument("--labels", default="evals/labels.json")
     args = ap.parse_args()

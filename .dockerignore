@@ -1,0 +1,20 @@
+# Keep the build context small and secrets out of the image.
+.git
+.gitignore
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.DS_Store
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.sqlite
+*.log
+.agents
+.claude
+tests/
+PLAN.md

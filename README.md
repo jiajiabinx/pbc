@@ -31,6 +31,35 @@ Swap the mailbox / PBC / profile inputs for the held-out set — the PBC list is
 the config, parsed at runtime (regex-parsed, with a one-call LLM fallback for
 unfamiliar list formats). Nothing engagement-specific is hardcoded.
 
+## Storage backends
+
+Persistence runs on either SQLite or Postgres, chosen from the connection string
+(`db.py`):
+
+- **No `DATABASE_URL`** → SQLite at `data/pbc.db` (default for local dev + tests).
+- **`DATABASE_URL=postgresql://…`** → Postgres. 
+
+## Deploy to Railway
+
+The app is containerized (`Dockerfile` + `railway.json`); the Streamlit UI is the
+web service and it spawns the agent runner as a subprocess in the same container.
+
+1. Push this repo to GitHub and create a Railway project from it (Railway builds
+   the `Dockerfile` automatically; it injects `$PORT`).
+2. Set service variables:
+   - `DATABASE_URL` — your shared Postgres URL (Railway's Postgres plugin sets
+     this automatically if you add one; otherwise paste your own).
+   - `ANTHROPIC_API_KEY` — or configure a gateway via `ANTHROPIC_BASE_URL`.
+3. Deploy. Tables are created on first boot as `pbc_*` — no manual migration.
+
+See `.env.example` for the full variable list. Note: Railway's filesystem is
+ephemeral, so saved attachment files under `data/` don't survive redeploys
+(tracker state lives in Postgres regardless) — attach a volume at `/app/data` if
+you need the raw files to persist. The container image is lean (no
+`sentence-transformers`/torch); the matcher falls back to the deterministic
+hashed-ngram backend. Add `sentence-transformers>=3.0` to `requirements-prod.txt`
+to ship real embeddings.
+
 ## Architecture
 
 ```

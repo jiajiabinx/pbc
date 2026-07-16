@@ -22,8 +22,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Runs under runctl with stdout/stderr redirected to a log; force UTF-8 so
+# non-ASCII output can't raise UnicodeEncodeError under an ASCII locale.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import db  # noqa: E402
 from evals.run_evals import evaluate  # noqa: E402
 from store import Store  # noqa: E402
 
@@ -61,14 +70,18 @@ def main() -> int:
     ap.add_argument("--budget", type=float, default=2.0, help="hard USD cap per run")
     ap.add_argument("--groundtruth", default="input/sample/sample_groundtruth.json")
     ap.add_argument("--labels", default="evals/labels.json")
-    ap.add_argument("--report-db", default="data/pbc.db",
-                    help="DB whose meta table receives progress/results (the UI's DB)")
+    ap.add_argument("--report-db", default=os.environ.get("DATABASE_URL") or "data/pbc.db",
+                    help="DB whose meta table receives progress/results (the UI's DB); "
+                         "SQLite path or a postgresql:// URL (defaults to $DATABASE_URL)")
     ap.add_argument("--scratch-db", default="data/benchmark.db",
-                    help="throwaway DB each run executes against")
+                    help="throwaway SQLite DB each run executes against")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parent.parent
-    report = Store(str(root / args.report_db))
+    # Report DB may be Postgres (shared with the UI); the scratch DB is always
+    # a local SQLite file, so only join the latter with the repo root.
+    report = Store(args.report_db if db.is_pg(args.report_db)
+                   else str(root / args.report_db))
     report.set_meta("bench_pid", str(os.getpid()))
     report.set_meta("bench_status", "running")
     report.set_meta("bench_error", "")

@@ -197,9 +197,13 @@ def run_mailbox(store: Store, router: models.Router, matcher, profile_text: str,
         try:
             res = run_episode(store, router, matcher, profile_text, system, email)
         except models.BudgetExceeded as e:
+            # Not processed — leave processed_at NULL so a resume run retries it.
             print(f"  !! {e}")
             results.append({"email_id": email.email_id, "outcome": "budget_exceeded"})
             break
+        # Mark processed only after the episode ran, so a crash/stop mid-episode
+        # leaves the email in the resume queue instead of skipping it next run.
+        store.mark_email_processed(email.email_id)
         print(f"  -> {res['model']} | {res['outcome']} | {res['summary']}"
               f" | total ${router.spent():.4f}")
         results.append(res | {"email_id": email.email_id})

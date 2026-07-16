@@ -1,0 +1,10 @@
+# Lean runtime for the container image (Railway). Excludes pytest (dev) and
+# sentence-transformers (pulls torch, ~GBs) — the matcher falls back to the
+# deterministic hashed-ngram backend when sentence-transformers is absent.
+# To ship real embeddings in prod, add `sentence-transformers>=3.0` here.
+anthropic>=0.90
+pdfplumber>=0.11
+openpyxl>=3.1
+streamlit[pdf]>=1.38
+pandas>=2.0
+psycopg[binary]>=3.1

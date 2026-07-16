@@ -33,6 +33,9 @@ class FakeRouter:
         self.calls.append((model, kwargs))
         return self.scripts[model].pop(0)
 
+    def spent(self):
+        return 0.0
+
 
 class FakeMatcher:
     def match(self, query, top_k=5):
@@ -107,6 +110,40 @@ def test_run_control_stop_halts_before_next_episode(store):
     assert store.get_meta("run_status") == "stopped"
     assert router.calls == []
     store.set_meta("run_control", "run")  # reset for other tests
+
+
+PBC_ITEMS = [{"item_id": "PBC-01", "category": "c", "priority": "High",
+              "description": "d", "acceptance": "a", "expected_docs": "pdf"}]
+
+
+def test_completed_episode_marks_email_processed(store):
+    router = FakeRouter({models.WORKER: [
+        response([tool_use("submit_plan", {"classification": "other", "steps": ["nothing"]})]),
+        response([tool_use("done", {"summary": "no action"})]),
+    ]})
+    email = make_email()
+    agent.run_mailbox(store, router, FakeMatcher(), "profile", PBC_ITEMS, "header", [email])
+    row = store.conn.execute(
+        "SELECT processed_at FROM emails WHERE email_id=?", (email.email_id,)).fetchone()
+    assert row["processed_at"] is not None
+
+
+def test_crashed_episode_leaves_email_unprocessed_for_resume(store):
+    # Regression: a crash mid-episode must NOT mark the email processed, or the
+    # resume filter (processed_at IS NOT NULL) silently skips it on the next run.
+    class Boom(FakeRouter):
+        def call(self, model, **kwargs):
+            self.calls.append((model, kwargs))
+            raise RuntimeError("network blew up mid-episode")
+
+    email = make_email()
+    with pytest.raises(RuntimeError):
+        agent.run_mailbox(store, Boom({}), FakeMatcher(), "profile",
+                          PBC_ITEMS, "header", [email])
+    row = store.conn.execute(
+        "SELECT processed_at FROM emails WHERE email_id=?", (email.email_id,)).fetchone()
+    assert row is not None                # the email was recorded
+    assert row["processed_at"] is None    # but not marked processed -> resume retries it
 
 
 def test_status_guard_error_returned_to_model_not_raised(store):

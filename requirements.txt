@@ -4,6 +4,9 @@ openpyxl>=3.1
 streamlit[pdf]>=1.38
 pandas>=2.0
 pytest>=8.0
+# Postgres driver (used only when DATABASE_URL is a postgresql:// URL; local
+# dev and the test suite fall back to SQLite and don't import it).
+psycopg[binary]>=3.1
 # Local embeddings for candidate matching ($0, offline). Heavy (pulls torch);
 # the code falls back to a deterministic hashed-ngram matcher if absent.
 sentence-transformers>=3.0
