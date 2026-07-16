@@ -47,7 +47,8 @@ def _outstanding_items(store: Store) -> list[dict]:
 
 def _correspondents(store: Store) -> str:
     rows = store.conn.execute(
-        "SELECT from_name, from_addr, COUNT(*) n FROM emails GROUP BY from_addr ORDER BY n DESC"
+        "SELECT MAX(from_name) from_name, from_addr, COUNT(*) n "
+        "FROM emails GROUP BY from_addr ORDER BY n DESC"
     ).fetchall()
     return "\n".join(f"  {r['from_name']} <{r['from_addr']}> ({r['n']} emails)" for r in rows)
 
